@@ -202,7 +202,7 @@ def test_feed():
     if not build_runner():
         return
 
-    # 3 个示例 demo
+    # 4 个示例 demo
     demos = [
         ("demo1_if", str(ROOT / "example" / "s2c" / "demo1_if.s2c"),
          ["echo mode ok", "echo done", "RUN-OK"]),
@@ -210,6 +210,8 @@ def test_feed():
          ["step 100", "echo loop-end", "RUN-OK"]),
         ("demo3_fn", str(ROOT / "example" / "s2c" / "demo3_fn.s2c"),
          ["echo note alpha beta", "echo hit", "echo note line1 line2", "RUN-OK"]),
+        ("demo4_control", str(ROOT / "example" / "s2c" / "demo4_control.s2c"),
+         ["echo even-sum=20", "echo idle-ok", "echo debug-on", "RUN-OK"]),
     ]
     for tag, path, subs in demos:
         try:
