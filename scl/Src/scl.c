@@ -164,6 +164,9 @@ static uint8_t     s_label_cnt = 0u;
 /* ---- 条件标志 G_RETURN ---- */
 static uint8_t s_ret = 0u;
 
+/* 会话变量保留标记：置 1 后脚本结束不自动释放变量（供交互 shell/长会话） */
+static uint8_t s_keep_vars = 0u;
+
 /* ---- 执行状态 ---- */
 static uint8_t  s_busy = 0u;
 static volatile uint8_t s_abort = 0u;
@@ -748,6 +751,43 @@ int SCL_VarFreeCount(void)
     return (int)SCL_CFG_VAR_MAX - SCL_VarCount();
 }
 
+/* 会话变量保留：keep!=0 时脚本结束不自动释放变量（供交互 shell/长会话使用）。
+   返回旧值；默认 0（一次脚本跑完自动释放全部变量） */
+int SCL_VarKeep(int keep)
+{
+    int old = (s_keep_vars != 0u) ? 1 : 0;
+    s_keep_vars = (keep != 0) ? 1u : 0u;
+    return old;
+}
+
+/* 按索引遍历已用变量名（idx 从 0 起）。成功 0 并写 name；越界/失败 -1 */
+int SCL_VarEnum(int idx, char *name, int cap)
+{
+    int n = 0;
+    int i;
+    if ((name == NULL) || (cap <= 0) || (idx < 0))
+    {
+        return -1;
+    }
+    for (i = 0; i < (int)SCL_CFG_VAR_MAX; i++)
+    {
+        if (s_vars[i].used != 0u)
+        {
+            if (n == idx)
+            {
+                uint16_t k;
+                uint16_t nl = Scl_StrLen(s_vars[i].name);
+                if ((uint16_t)(cap - 1) < nl) { return -1; }
+                for (k = 0u; k < nl; k++) { name[k] = s_vars[i].name[k]; }
+                name[nl] = '\0';
+                return 0;
+            }
+            n++;
+        }
+    }
+    return -1;
+}
+
 /* 变量数值化（供运算/条件指令）：
    int→值；bool→1/0；flag→已定义即 1；string→整段解析失败按 0（ok=0） */
 static int32_t Scl_VarNum(const char *name, uint8_t *ok)
@@ -854,6 +894,12 @@ void SCL_RegisterCmd(scl_cmd_t *cmd)
         pp = &((*pp)->next);
     }
     *pp = cmd;
+}
+
+/* 只读：返回命令链表头（供遍历/补全/调试） */
+const scl_cmd_t *SCL_CmdHead(void)
+{
+    return s_cmd_head;
 }
 
 int SCL_ArgType(int idx)
@@ -1890,7 +1936,10 @@ static void Scl_Finish(int reason)
     s_label_cnt = 0u;
 #endif
     s_abort    = 0u;
-    SCL_VarFreeAll();
+    if (s_keep_vars == 0u)
+    {
+        SCL_VarFreeAll();   /* 默认：脚本结束自动释放全部变量 */
+    }
     s_ret      = 0u;
     if (reason == 0)
     {
@@ -2220,6 +2269,7 @@ void SCL_Init(void)
     s_label_cnt = 0u;
 #endif
     s_ret       = 0u;
+    s_keep_vars = 0u;
     SCL_VarFreeAll();
     s_inited    = 1u;
 }

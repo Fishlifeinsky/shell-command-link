@@ -27,6 +27,7 @@
 #include "scl.h"
 #include "scl_port.h"
 #include "demo_cmds.h"
+#include "scl_shell.h"   /* 定义 SCL_EX_SHELL_EN（可裁剪） */
 
 /* ========================== 测试基础设施 ========================== */
 
@@ -465,6 +466,138 @@ static void TestMisc(void)
 
 /* ========================== 主流程 ========================== */
 
+#if (SCL_EX_SHELL_EN == 1u)
+
+/* ---- 7. 交互 Shell（注入字节流 = 模拟 MCU 串口收/发） ---- */
+
+/* 推进 SCL 直到空闲，再让 shell 补打印提示符 */
+static int ShellLoopIdle(void)
+{
+    int t = 0;
+    while (!SCL_Idle())
+    {
+        SCL_Loop();
+        t++;
+        if (t > MAX_TICKS)
+        {
+            SCL_Abort();
+            while (!SCL_Idle())
+            {
+                SCL_Loop();
+            }
+            return -2;
+        }
+    }
+    Scl_Shell_Poll();
+    return t;
+}
+
+/* 注入一行 + 回车并跑完 */
+static int ShellLine(const char *cmd)
+{
+    int i;
+    for (i = 0; cmd[i] != '\0'; i++)
+    {
+        Scl_Shell_Feed((int)(unsigned char)cmd[i]);
+    }
+    Scl_Shell_Feed('\n');
+    return ShellLoopIdle();
+}
+
+/* 注入一串字节（不含回车） */
+static void FeedStr(const char *s)
+{
+    int i;
+    for (i = 0; s[i] != '\0'; i++)
+    {
+        Scl_Shell_Feed((int)(unsigned char)s[i]);
+    }
+}
+
+static void TestShell(void)
+{
+    Section("7. 交互 Shell（注入字节流 = MCU 串口模拟）");
+    Scl_Shell_Init(SCL_Port_PutChar);   /* 初始提示符不捕获 */
+
+    /* 基本执行 */
+    Scl_CapBegin(g_cap, sizeof(g_cap));
+    ShellLine("demo_reset 3");
+    ShellLine("demo_inc");
+    Scl_CapEnd();
+    CHECK(strstr(g_cap, "cnt=1") != NULL, "Shell 执行 demo_inc → cnt=1");
+
+    /* 多命令 + 变量跨命令存活 */
+    Scl_CapBegin(g_cap, sizeof(g_cap));
+    ShellLine("var int vv=7");
+    ShellLine("echo vv=${vv}");
+    Scl_CapEnd();
+    CHECK(strstr(g_cap, "echo vv=7") != NULL, "Shell 变量定义 + ${} 取值");
+
+    /* Tab 补全注册命令（ech → echo，唯一） */
+    Scl_CapBegin(g_cap, sizeof(g_cap));
+    FeedStr("ech\t ping");
+    Scl_Shell_Feed('\n');
+    ShellLoopIdle();
+    Scl_CapEnd();
+    CHECK(strstr(g_cap, "echo ping") != NULL, "Tab 补全注册命令 echo");
+
+    /* Tab 补全保留字（hel → help，唯一） */
+    Scl_CapBegin(g_cap, sizeof(g_cap));
+    FeedStr("hel\t");
+    Scl_Shell_Feed('\n');
+    ShellLoopIdle();
+    Scl_CapEnd();
+    CHECK(strstr(g_cap, "echo") != NULL || CountStr(g_cap, "hel") >= 2,
+          "Tab 补全保留字 help");
+
+    /* Tab 补全变量 ${v → ${vv} */
+    Scl_CapBegin(g_cap, sizeof(g_cap));
+    ShellLine("var int vv=3");
+    FeedStr("echo ${v");
+    Scl_Shell_Feed('\t');
+    FeedStr("}");
+    Scl_Shell_Feed('\n');
+    ShellLoopIdle();
+    Scl_CapEnd();
+    CHECK(strstr(g_cap, "echo 3") != NULL, "Tab 补全 ${变量}");
+
+    /* 历史 ↑ 重放上一条 */
+    Scl_CapBegin(g_cap, sizeof(g_cap));
+    ShellLine("demo_reset 4");
+    ShellLine("demo_inc");      /* cnt=1 */
+    FeedStr("\x1b[A");          /* ↑ 调出 demo_inc */
+    Scl_Shell_Feed('\n');       /* 重放 → cnt=2 */
+    ShellLoopIdle();
+    Scl_CapEnd();
+    CHECK(strstr(g_cap, "cnt=2") != NULL, "历史 ↑ 重放后计数到 2");
+
+    /* busy 时输入新命令 → 忽略并提示 */
+    Scl_CapBegin(g_cap, sizeof(g_cap));
+    FeedStr("label L;jump L");   /* 死循环脚本进入 busy */
+    Scl_Shell_Feed('\n');
+    FeedStr("echo x");           /* 此时 busy */
+    Scl_Shell_Feed('\n');
+    SCL_Abort();
+    while (!SCL_Idle())
+    {
+        SCL_Loop();
+    }
+    Scl_Shell_Poll();
+    Scl_CapEnd();
+    CHECK(strstr(g_cap, "busy") != NULL, "busy 时新命令被忽略并提示");
+
+    /* quit 退出请求 */
+    CHECK(Scl_Shell_QuitReq() == 0, "初始无退出请求");
+    FeedStr("quit\n");
+    CHECK(Scl_Shell_QuitReq() == 1, "quit 置退出请求");
+
+    /* 恢复库默认：关会话保留并清变量 */
+    SCL_VarKeep(0);
+    SCL_VarFreeAll();
+}
+
+#endif /* SCL_EX_SHELL_EN */
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -485,6 +618,9 @@ int main(void)
     TestAsync();
     TestReliability();
     TestMisc();
+#if (SCL_EX_SHELL_EN == 1u)
+    TestShell();
+#endif
 
     printf("\n===== 汇总 =====\n");
     printf("PASS=%d  FAIL=%d\n", g_pass, g_fail);

@@ -253,6 +253,30 @@ int SCL_VarFreeCount(void);
   */
 int SCL_VarCount(void);
 
+/**
+  * @brief  会话变量保留开关：置 1 后脚本结束不再自动释放全部变量
+  *         （供交互 shell / 长会话让 var 跨命令存活；仍可用 free 显式释放）
+  * @param  keep 0=关闭（默认，一次性脚本跑完自动释放）；非 0=开启
+  * @retval 旧值（便于恢复）
+  */
+int SCL_VarKeep(int keep);
+
+/**
+  * @brief  只读命令链表头（供遍历/补全/调试）
+  * @retval 首节点指针；无命令返回 NULL
+  * @note   链表由各命令模块静态定义 + SCL_RegisterCmd 挂入
+  */
+const scl_cmd_t *SCL_CmdHead(void);
+
+/**
+  * @brief  按索引遍历已用变量名（供 shell 补全 / 调试）
+  * @param  idx  序号（0 起）
+  * @param  name 输出缓冲（含结尾 '\0'）
+  * @param  cap  缓冲容量
+  * @retval 0=找到；-1=越界/无更多/参数非法
+  */
+int SCL_VarEnum(int idx, char *name, int cap);
+
 #ifdef __cplusplus
 }
 #endif
