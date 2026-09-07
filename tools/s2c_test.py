@@ -59,6 +59,8 @@ def test_unit():
     unit_exact("var n = 3", "var int n=3", "var 无类型推断 int")
     unit_exact("var b = true", "var bool b=true", "var 无类型推断 bool")
     unit_exact("var f = -x", "var flag f=-x", "var 无类型推断 flag")
+    unit_exact("var a = 0x1F", "var int a=0x1F", "var 无类型推断 int(hex)")
+    unit_exact("var b = 0b101", "var int b=0b101", "var 无类型推断 int(0b)")
 
     # 原子条件：比较 → 运算指令；bool/变量 → btest
     unit_exact("if (mode == 1) { echo(a) } else { echo(b) }",

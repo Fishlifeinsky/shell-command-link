@@ -686,11 +686,16 @@ CMP_OPWORD = {"==": "ieq", "!=": "ine", "<": "ilt", "<=": "ile",
 
 
 def infer_var_type(value):
-    """var 未显式类型时推断：true/false→bool；-x→flag；十进制→int；其余→string"""
+    """var 未显式类型时推断：true/false→bool；-x→flag；十进制/0x/0b→int；其余→string"""
     v = value
     if v.lower() in ("true", "false"):
         return "bool"
     body = v[1:] if v.startswith("-") else v
+    if body[:2].lower() in ("0x", "0b"):
+        rest = body[2:]
+        if rest and all(c in "0123456789abcdefABCDEF" for c in rest):
+            return "int"
+        return "string"
     if body.isdigit():
         return "int"
     if len(v) == 2 and v[0] == "-" and v[1].isalpha():
