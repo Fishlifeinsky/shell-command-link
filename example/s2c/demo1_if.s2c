@@ -1,0 +1,16 @@
+# 演示1：变量 + 无条件 if/else（沿用上一条命令的 G_RETURN）
+#
+# 说明：cmp 两数相等即置 G_RETURN=true；
+#       if { } else { } 不带条件 = 直接根据当前 G_RETURN 分支。
+
+var mode = 1
+
+cmp(1, ${mode})
+
+if {
+    echo("mode", ${mode}, "ok")
+} else {
+    echo("mode", ${mode}, "ng")
+}
+
+echo("done")

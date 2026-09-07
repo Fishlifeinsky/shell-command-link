@@ -1,0 +1,19 @@
+# 演示2：C 语义 while + 用户函数作条件（fn 每圈返回判断值）
+#
+# demo_reset(3) : 演示计数器清零并设目标 3
+# demo_inc()    : 计数+1；未达目标则置 G_RETURN=true（作为循环继续条件）
+# fn not_done() : 用户函数，作为 while 条件（编译期内联，每圈重跑）
+
+var sp = 100
+
+fn not_done() {
+    demo_inc()
+}
+
+demo_reset(3)
+
+while (not_done()) {
+    echo("step", ${sp})
+}
+
+echo("loop-end")

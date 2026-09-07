@@ -1,0 +1,24 @@
+# 演示3：带参函数（内联）+ ret(true/false) 糖衣 + 多行实参/注释
+
+# fn 带两个参数：调用时按字面替换进函数体（编译期内联）
+fn note(x, y) {
+    echo("note", x, y)
+}
+
+note("alpha", "beta")
+
+// ret(1) = 显式置 G_RETURN=true（映射到目标命令，默认 setret，可用 --ret-setter 改）
+ret(1)
+
+if {
+    echo("hit")
+} else {
+    echo("miss")
+}
+
+/* 多行实参示例 */
+note("line1",
+     "line2")
+
+ret(false)
+echo("tail")

@@ -18,6 +18,7 @@
 | 文档 | 内容 |
 |------|------|
 | `doc/arc/shell-command-link-design.md` | 设计（含左右脑互博、内存估算、变更记录） |
+| `doc/arc/script2chain-design.md` | 现代脚本→指令链 转译器设计（语法与映射） |
 | `doc/spec/scl-spec.md` | 语法/API/移植/裁剪规格 + 集成示例 |
 | `doc/other/scl-test-report.md` | 全量测试报告（大小/速度/可靠性/重复性/复杂度） |
 | `doc/user/prompt-shell-command-link.md` | 原始需求存档 |
@@ -25,9 +26,11 @@
 ## 目录
 
 ```
-scl/Inc/scl.h scl_cfg.h   库公共接口 + 可裁剪配置
-scl/Src/scl.c             解析器/执行器/变量/if/while/异步
-example/                  PC 示例 + 全量测试（main.c/scl_port.c/demo_cmds.c/CMakeLists.txt）
+scl/Inc/scl.h scl_cfg.h       库公共接口 + 可裁剪配置
+scl/Src/scl.c                 解析器/执行器/变量/if/while/异步
+tools/scl_script2chain.py     现代语法脚本 → SCL 指令链（Python 转译器）
+tools/s2c_test.py             转译器测试（精确比对 + 真实回喂）
+example/                      PC 示例（main.c 全量测试 / chain_runner.c 回喂工具 / s2c/*.s2c 现代脚本）
 ```
 
 ## 快速集成
@@ -53,6 +56,29 @@ gcc -O2 -Wall -Wextra -I scl/Inc -I example \
     scl/Src/scl.c example/scl_port.c example/demo_cmds.c example/main.c \
     -o build/scl_test
 # 或用 CMake：cmake -S example -B build && cmake --build build
+```
+
+## 现代脚本 → 指令链（Python 工具）
+
+可用更可读的语法写脚本，再转成单行 SCL 指令链喂给 `SCL_Run()`：
+
+```bash
+python tools/scl_script2chain.py example/s2c/demo1_if.s2c     # 打印指令链
+python tools/scl_script2chain.py in.s2c -o out.chain          # 写文件
+python tools/scl_script2chain.py --ret-setter setret < in.s2c # 改置返回命令名
+python tools/s2c_test.py                                      # 转译器测试(含真实回喂)
+```
+
+现代语法速览（详见 `doc/arc/script2chain-design.md`，示例见 `example/s2c/`）：
+
+```s2c
+# 注释支持 # // /* */
+var sp = 100                       # 变量（上限 2/名≤8/值≤15）
+fn not_done() { demo_inc() }       # 用户函数：作 if/while 条件（内联）
+cmp(1, ${sp})                      # 命令产生 G_RETURN
+if { echo("ok") } else { echo("ng") }          # 无条件 if（沿用 G_RETURN）
+while (not_done()) { echo("step", ${sp}) }     # C 语义 while
+ret(1)                             # 置 G_RETURN（默认映射 setret，可配）
 ```
 
 ## 裁剪
