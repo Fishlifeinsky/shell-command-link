@@ -109,6 +109,14 @@ extern "C" {
 #error "SCL_CFG_ENV_MAX must <= 255"
 #endif
 
+/* ============================ 命令描述注册辅助（argtable3 风格） ============================ */
+
+/* 命令描述总开关：1=命令可带描述（help + 参数模板），注册后自动校验参数、
+   错误输出 usage、help 汇总带说明；0=裁掉（scl_cmd_t 无 desc 字段） */
+#ifndef SCL_CFG_CMDDESC_EN
+#define SCL_CFG_CMDDESC_EN     1u
+#endif
+
 /* ============================ 命令参数 ============================ */
 
 /* 单条命令最大参数个数（argv 数组长度） */

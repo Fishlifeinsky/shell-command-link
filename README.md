@@ -9,6 +9,9 @@
 - **类型化参数字节缓存**：命令参数入缓存即解析成 type 块（bool/int/flag/string），
   type 开头、无空格分隔；命令可用 `SCL_ArgType()` 区分参数类型
 - 命令实参内 `${x}` 取值（支持拼接）；C 命令可用 `SCL_VarGet()/VarSet()/VarSetT()/VarType()`
+- **命令描述注册辅助**（参考 ESP-IDF console/argtable3）：声明命令 help + 参数模板，
+  注册后自动参数数量/类型校验并输出 usage，`help` 汇总带说明；`SCL_ParseInt` 无 libc 取数
+- 源码**多模块**：`scl.c`(核心) + `scl_var.c`(会话变量) + `scl_env.c`(env)，内部 `scl_priv.h` 共享
 - `free` 释放 / `var` 查剩余空位；**脚本跑完自动全释放**
 - 全局条件标志 `G_RETURN`：命令/比较指令写、`jump -a` 读（**读后自动清零**）
 - 普通调用 `cmd a b`（空白分隔；含空格的参数用引号包裹为整体）
@@ -42,6 +45,7 @@
 | `doc/arc/scl-const-prog.md` | **v0.3**：预编译只读程序（s2c→C，省 RAM）设计 |
 | `doc/arc/scl-shell-sim.md` | **v0.3**：交互 Shell + MCU 串口模拟 + VarKeep |
 | `doc/arc/scl-env-buffer.md` | **v0.3**：环境变量缓冲（默认装载/固化/恢复） |
+| `doc/arc/scl-cmddesc.md` | **v0.3**：多模块源码 + 命令描述注册辅助（argtable3 风格） |
 | `doc/other/scl-config-profiles.md` | **v0.3**：配置裁剪档模板（min/平衡/full + 内存预算） |
 | `doc/spec/scl-spec.md` | 语法/API/移植/裁剪规格 + 集成示例 |
 | `doc/other/scl-test-report.md` | 全量测试报告（大小/速度/可靠性/重复性/复杂度） |
@@ -51,8 +55,8 @@
 
 ```
 scl/Inc/scl.h scl_cfg.h       库公共接口 + 可裁剪配置
-scl/Src/scl.c scl_var.c scl_env.c   核心(编译/执行/命令/异步) · 会话变量 · 环境变量缓冲
-scl/Src/scl_priv.h             多模块内部共享头
+scl/Src/scl.c scl_var.c scl_env.c   核心(编译/执行/命令/异步) · 会话变量 · 环境变量缓冲(多模块)
+scl/Src/scl_priv.h             多模块内部共享头（勿在应用层使用）
 tools/scl_script2chain.py     现代语法脚本 → SCL 指令链（Python 转译器）
 tools/scl_emit_c.py           SCL 脚本 → const C 程序（Flash 只读，省 RAM）
 tools/s2c_test.py             转译器测试（精确比对 + 真实回喂 + emit-c）

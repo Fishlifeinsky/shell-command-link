@@ -84,6 +84,9 @@ typedef void (*scl_cmd_handler_t)(int argc, char *argv[]);
 typedef bool (*scl_sync_t)(bool clear);
 
 /* 命令链表节点：由命令所属模块静态定义，注册后挂入命令链表 */
+#if (SCL_CFG_CMDDESC_EN != 0u)
+typedef struct scl_cmd_desc scl_cmd_desc_t;   /* 命令描述（见下，可含 help+参数模板） */
+#endif
 typedef struct scl_cmd
 {
     const char          *name;   /* 命令名（不能为保留关键字） */
@@ -91,6 +94,9 @@ typedef struct scl_cmd
     scl_sync_t           sync;   /* 同步信号回调（NULL=同步命令；非 NULL=异步需等待） */
     struct scl_cmd      *next;   /* 链表下一节点（由 SCL_RegisterCmd 维护） */
     uint16_t             opc;    /* 字节码 opcode（SCL_RegisterCmd 自动分配，勿手填） */
+#if (SCL_CFG_CMDDESC_EN != 0u)
+    const scl_cmd_desc_t *desc;  /* 命令描述（可选：NULL=无描述/无模板校验） */
+#endif
 } scl_cmd_t;
 
 /**
@@ -168,6 +174,59 @@ void SCL_Abort(void);
   * @note   各模块在自身初始化时调用；命令名不得为保留关键字 if/while/var/free/help
   */
 void SCL_RegisterCmd(scl_cmd_t *cmd);
+
+#if (SCL_CFG_CMDDESC_EN != 0u)
+
+/* ============================ 命令描述注册辅助（argtable3 风格） ============================ */
+
+/**
+  * @brief  参数模板项（类 argtable3：声明命令参数的类型/可选性/帮助）
+  * @note   脚本调用按位置匹配模板；模板 STR 接受任意参数（文本），
+  *         INT 接受整型或可解析整数的文本，BOOL/FLAG 要求类型一致
+  */
+typedef struct scl_arg_spec
+{
+    const char *name;    /* 参数名（usage/help 显示） */
+    uint8_t     type;    /* SCL_T_BOOL/INT/FLAG/STR */
+    uint8_t     opt;     /* 0=必选；1=可选 */
+    const char *help;    /* 说明（可 NULL） */
+} scl_arg_spec_t;
+
+/**
+  * @brief  命令描述（声明式：名字 + 一行帮助 + 参数模板）
+  * @note   args=NULL     → 不限制参数（如 echo 变参）；
+  *         args!=NULL 且 arg_cnt>0 → 按模板校验（缺必选/多给/类型不符即拒绝并打印 usage）；
+  *         args!=NULL 且 arg_cnt==0 → 要求无参数
+  */
+typedef struct scl_cmd_desc
+{
+    const char           *name;    /* 命令名 */
+    const char           *help;    /* 一行帮助（help 命令显示，可 NULL） */
+    const scl_arg_spec_t *args;    /* 参数模板数组（NULL=不限） */
+    int                   arg_cnt; /* 模板条数 */
+    scl_cmd_handler_t     fn;      /* 命令实现（校验通过后调用，参数在 argv） */
+    scl_sync_t            sync;    /* 异步同步回调（NULL=同步） */
+} scl_cmd_desc_t;
+
+/**
+  * @brief  按描述注册命令（等价"填节点 + 自动校验 + help 关联"）
+  * @param  node 命令节点（静态/全局存储，生命周期贯穿运行期）
+  * @param  desc 命令描述（静态 const；注册后不得改动）
+  * @note   校验失败：输出 usage + 错误消息，并中断当前脚本（等同运行错误）。
+  *         内置 help 会自动列出带 help 文本的命令与模板概要
+  */
+void SCL_CmdRegisterDesc(scl_cmd_t *node, const scl_cmd_desc_t *desc);
+
+#endif /* SCL_CFG_CMDDESC_EN */
+
+/* ============================ 数字解析（命令实现内取值用，无 libc） ============================ */
+
+/**
+  * @brief  十进制/0x/0b 文本 → int32（供命令内把 argv 转数字，无需 atoi）
+  * @param  s   文本（NULL 或非法 → 返回 def）
+  * @param  def 解析失败返回值
+  */
+int32_t SCL_ParseInt(const char *s, int32_t def);
 
 /* ============================ 参数类型查询（命令调用期间） ============================ */
 

@@ -57,12 +57,13 @@ static void Cmd_demo_inc(int argc, char *argv[]);
 static void Cmd_wait(int argc, char *argv[]);
 static bool Sync_wait(bool clear);
 
-static scl_cmd_t s_cmd_echo       = { "echo",       Cmd_echo,       NULL, NULL, 0 };
-static scl_cmd_t s_cmd_setret     = { "setret",     Cmd_setret,     NULL, NULL, 0 };
-static scl_cmd_t s_cmd_noop       = { "noop",       Cmd_noop,       NULL, NULL, 0 };
-static scl_cmd_t s_cmd_demo_reset = { "demo_reset", Cmd_demo_reset, NULL, NULL, 0 };
-static scl_cmd_t s_cmd_demo_inc   = { "demo_inc",   Cmd_demo_inc,   NULL, NULL, 0 };
-static scl_cmd_t s_cmd_wait       = { "wait",       Cmd_wait,       Sync_wait, NULL, 0 };
+/* 命令节点（静态存储；字段由注册函数填充，name/fn/sync 不随脚本生命周期变化） */
+static scl_cmd_t s_cmd_echo;
+static scl_cmd_t s_cmd_setret;
+static scl_cmd_t s_cmd_noop;
+static scl_cmd_t s_cmd_demo_reset;
+static scl_cmd_t s_cmd_demo_inc;
+static scl_cmd_t s_cmd_wait;
 
 /* ========================== 演示命令状态 ========================== */
 
@@ -143,14 +144,45 @@ static bool Sync_wait(bool clear)
 
 /* ========================== 注册 ========================== */
 
+#if (SCL_CFG_CMDDESC_EN != 0u)
+/* 命令描述（argtable3 风格：help + 参数模板，注册后自动校验/usage/help 汇总） */
+static const scl_arg_spec_t a_setret_val[] = { { "value", SCL_T_INT, 0u, "0/1，写 G_RETURN" } };
+static const scl_arg_spec_t a_reset_n[]    = { { "n",     SCL_T_INT, 1u, "目标计数（默认 3）" } };
+static const scl_arg_spec_t a_wait_n[]     = { { "n",     SCL_T_INT, 0u, "模拟耗时 Loop 数" } };
+
+static const scl_cmd_desc_t s_desc_echo       = { "echo",       "打印参数（支持展开）", NULL, 0, Cmd_echo,       NULL };
+static const scl_cmd_desc_t s_desc_setret     = { "setret",     "写条件标志 G_RETURN", a_setret_val, 1, Cmd_setret,     NULL };
+static const scl_cmd_desc_t s_desc_noop       = { "noop",       "空操作（压力/空跑）", NULL, 0, Cmd_noop,       NULL };
+static const scl_cmd_desc_t s_desc_demo_reset = { "demo_reset", "计数清零并设目标",     a_reset_n, 1, Cmd_demo_reset, NULL };
+static const scl_cmd_desc_t s_desc_demo_inc   = { "demo_inc",   "计数+1 并置 G_RETURN", NULL, 0, Cmd_demo_inc,   NULL };
+static const scl_cmd_desc_t s_desc_wait       = { "wait",       "模拟耗时（异步）",     a_wait_n, 1, Cmd_wait,       Sync_wait };
+#endif
+
 void Scl_Demo_Register(void)
 {
+#if (SCL_CFG_CMDDESC_EN != 0u)
+    SCL_CmdRegisterDesc(&s_cmd_echo, &s_desc_echo);
+    SCL_CmdRegisterDesc(&s_cmd_setret, &s_desc_setret);
+    SCL_CmdRegisterDesc(&s_cmd_noop, &s_desc_noop);
+    SCL_CmdRegisterDesc(&s_cmd_demo_reset, &s_desc_demo_reset);
+    SCL_CmdRegisterDesc(&s_cmd_demo_inc, &s_desc_demo_inc);
+    SCL_CmdRegisterDesc(&s_cmd_wait, &s_desc_wait);
+#else
+    /* CMDDESC 关闭：退回普通注册 */
+    s_cmd_echo.name = "echo";        s_cmd_echo.fn = Cmd_echo;        s_cmd_echo.sync = NULL;
+    s_cmd_setret.name = "setret";    s_cmd_setret.fn = Cmd_setret;    s_cmd_setret.sync = NULL;
+    s_cmd_noop.name = "noop";        s_cmd_noop.fn = Cmd_noop;        s_cmd_noop.sync = NULL;
+    s_cmd_demo_reset.name = "demo_reset"; s_cmd_demo_reset.fn = Cmd_demo_reset;
+    s_cmd_demo_reset.sync = NULL;
+    s_cmd_demo_inc.name = "demo_inc"; s_cmd_demo_inc.fn = Cmd_demo_inc; s_cmd_demo_inc.sync = NULL;
+    s_cmd_wait.name = "wait";        s_cmd_wait.fn = Cmd_wait;        s_cmd_wait.sync = Sync_wait;
     SCL_RegisterCmd(&s_cmd_echo);
     SCL_RegisterCmd(&s_cmd_setret);
     SCL_RegisterCmd(&s_cmd_noop);
     SCL_RegisterCmd(&s_cmd_demo_reset);
     SCL_RegisterCmd(&s_cmd_demo_inc);
     SCL_RegisterCmd(&s_cmd_wait);
+#endif
 }
 
 #endif /* SCL_EX_CMDS_EN */

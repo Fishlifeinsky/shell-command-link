@@ -686,6 +686,55 @@ static void TestEnv(void)
 
 #endif /* SCL_CFG_ENV_EN */
 
+#if (SCL_CFG_CMDDESC_EN == 1u)
+
+/* ---- 9. 命令描述注册辅助（desc/help/参数模板校验，argtable3 风格） ---- */
+
+static void TestCmdDesc(void)
+{
+    char buf[600];
+
+    Section("9. 命令描述注册辅助（desc/help/模板校验）");
+
+    Scl_CapBegin(buf, sizeof(buf));
+    RunToIdle("help");
+    Scl_CapEnd();
+    CHECK(strstr(buf, "demo_inc") != NULL && strstr(buf, "计数+1") != NULL,
+          "help 列出命令并带描述帮助");
+    CHECK(strstr(buf, "usage: demo_reset") != NULL &&
+          strstr(buf, "计数清零并设目标") != NULL &&
+          strstr(buf, "[n:int]") != NULL,
+          "help 显示带模板命令、帮助与 usage 概要");
+
+    Scl_CapBegin(buf, sizeof(buf));
+    RunToIdle("setret");                  /* 缺 1 个必选 int */
+    Scl_CapEnd();
+    CHECK(strstr(buf, "缺少参数") != NULL && strstr(buf, "usage: setret") != NULL,
+          "缺参数 → 拒绝并输出 usage");
+
+    Scl_CapBegin(buf, sizeof(buf));
+    RunToIdle("setret abc");              /* 类型不符（string → int） */
+    Scl_CapEnd();
+    CHECK(strstr(buf, "期望 int") != NULL, "类型不符 → 拒绝并提示期望类型");
+
+    Scl_CapBegin(buf, sizeof(buf));
+    RunToIdle("setret 1 2");              /* 参数过多 */
+    Scl_CapEnd();
+    CHECK(strstr(buf, "参数过多") != NULL, "参数过多 → 拒绝");
+
+    Scl_CapBegin(buf, sizeof(buf));
+    RunToIdle("demo_reset 5;demo_inc");   /* 合法：可选 int 正常执行 */
+    Scl_CapEnd();
+    CHECK(strstr(buf, "cnt=1") != NULL, "合法带参 desc 命令正常执行");
+
+    CHECK(SCL_Idle() == 1 && SCL_VarCount() == 0, "desc 拒绝后状态干净");
+    CHECK(SCL_ParseInt("0x10", -1) == 16 && SCL_ParseInt("-3", 0) == -3 &&
+          SCL_ParseInt("abc", 7) == 7,
+          "SCL_ParseInt：hex/负/失败默认值");
+}
+
+#endif /* SCL_CFG_CMDDESC_EN */
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -711,6 +760,9 @@ int main(void)
 #endif
 #if (SCL_CFG_ENV_EN == 1u)
     TestEnv();
+#endif
+#if (SCL_CFG_CMDDESC_EN == 1u)
+    TestCmdDesc();
 #endif
 
     printf("\n===== 汇总 =====\n");

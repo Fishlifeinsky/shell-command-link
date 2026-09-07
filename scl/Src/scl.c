@@ -1392,6 +1392,10 @@ static uint8_t Scl_TypeOfName(const char *s, uint16_t n)
     return 0u;
 }
 
+#if (SCL_CFG_CMDDESC_EN != 0u)
+static void Scl_DescPrintUsage(const scl_cmd_t *nd);   /* 前向：供 help 输出模板概要 */
+#endif
+
 static void Scl_DoHelp(void)
 {
     scl_cmd_t *node;
@@ -1402,11 +1406,136 @@ static void Scl_DoHelp(void)
     Scl_Msg("scl: 已注册命令:\r\n");
     for (node = s_cmd_head; node != NULL; node = node->next)
     {
-        Scl_Msg("  %s%s (opc 0x%04x)\r\n",
-                node->name, (node->sync != NULL) ? " (异步)" : "",
+        Scl_Msg("  %s%s (opc 0x%04x)", node->name,
+                (node->sync != NULL) ? " (异步)" : "",
                 (unsigned int)node->opc);
+#if (SCL_CFG_CMDDESC_EN != 0u)
+        if ((node->desc != NULL) && (node->desc->help != NULL))
+        {
+            Scl_Msg(" - %s", node->desc->help);
+        }
+#endif
+        Scl_Msg("\r\n");
+#if (SCL_CFG_CMDDESC_EN != 0u)
+        if ((node->desc != NULL) && (node->desc->args != NULL) &&
+            (node->desc->arg_cnt > 0))
+        {
+            Scl_Msg("      ");
+            Scl_DescPrintUsage(node);   /* 模板概要（usage 行） */
+        }
+#endif
     }
 }
+
+/* 数字解析（命令内取值用，无 libc）：文本 → int32；失败返回 def */
+int32_t SCL_ParseInt(const char *s, int32_t def)
+{
+    int32_t v;
+    if ((s != NULL) && (Scl_ParseI32Len(s, Scl_StrLen(s), &v) == 0))
+    {
+        return v;
+    }
+    return def;
+}
+
+#if (SCL_CFG_CMDDESC_EN != 0u)
+/* ========================== 命令描述注册辅助（argtable3 风格） ========================== */
+
+/* 打印 usage 行（<必选:类型> [可选:类型] ...） */
+static void Scl_DescPrintUsage(const scl_cmd_t *nd)
+{
+    const scl_cmd_desc_t *d = nd->desc;
+    int i;
+    Scl_Msg("usage: %s", nd->name);
+    if ((d != NULL) && (d->args != NULL))
+    {
+        for (i = 0; i < d->arg_cnt; i++)
+        {
+            const scl_arg_spec_t *a = &d->args[i];
+            if (a->opt != 0u) { Scl_Msg(" ["); }
+            else              { Scl_Msg(" <"); }
+            Scl_Msg("%s:%s", a->name, Scl_TypeName(a->type));
+            if (a->opt != 0u) { Scl_Msg("]"); }
+            else              { Scl_Msg(">"); }
+        }
+    }
+    Scl_Msg("\r\n");
+}
+
+/* 单参数与模板匹配：0=通过。string 模板接受任意；int 模板接受 int 或可解析的文本；
+   bool/flag 模板要求类型一致 */
+static int Scl_DescArgOk(const scl_arg_spec_t *a, uint8_t have, const char *text)
+{
+    if (a->type == SCL_T_STR) { return 0; }
+    if (a->type == SCL_T_INT)
+    {
+        int32_t v;
+        if (have == SCL_T_INT) { return 0; }
+        if ((have == SCL_T_STR) &&
+            (Scl_ParseI32Len(text, Scl_StrLen(text), &v) == 0))
+        {
+            return 0;
+        }
+        return 1;
+    }
+    return (have == a->type) ? 0 : 1;
+}
+
+/* 按模板校验命令参数（s_argt/s_argv 为当前已还原参数）。0=通过；负=拒绝（已打印） */
+static int Scl_DescCheck(const scl_cmd_t *nd, int argc)
+{
+    const scl_cmd_desc_t *d = nd->desc;
+    int minreq = 0;
+    int i;
+
+    if ((d == NULL) || (d->args == NULL))
+    {
+        return 0;   /* 无模板：不限制 */
+    }
+    for (i = 0; i < d->arg_cnt; i++)
+    {
+        if (d->args[i].opt == 0u) { minreq++; }
+    }
+    if (argc < minreq)
+    {
+        Scl_MsgErr("命令 '%s': 缺少参数（至少 %d 个）", nd->name, minreq);
+        Scl_DescPrintUsage(nd);
+        return -1;
+    }
+    if (argc > d->arg_cnt)
+    {
+        Scl_MsgErr("命令 '%s': 参数过多（最多 %d 个）", nd->name, d->arg_cnt);
+        Scl_DescPrintUsage(nd);
+        return -2;
+    }
+    for (i = 0; i < argc; i++)
+    {
+        if (Scl_DescArgOk(&d->args[i], s_argt[i], s_argv[i]) != 0)
+        {
+            Scl_MsgErr("命令 '%s': 参数 %d '%s' 期望 %s",
+                       nd->name, i + 1, s_argv[i],
+                       Scl_TypeName(d->args[i].type));
+            Scl_DescPrintUsage(nd);
+            return -3;
+        }
+    }
+    return 0;
+}
+
+/* 按描述注册命令（填节点 name/fn/sync/desc 后挂链） */
+void SCL_CmdRegisterDesc(scl_cmd_t *node, const scl_cmd_desc_t *desc)
+{
+    if ((node == NULL) || (desc == NULL))
+    {
+        return;
+    }
+    node->name = desc->name;
+    node->fn   = desc->fn;
+    node->sync = desc->sync;
+    node->desc = desc;
+    SCL_RegisterCmd(node);
+}
+#endif /* SCL_CFG_CMDDESC_EN */
 
 /* 变量列表 */
 static void Scl_VarList(void)
@@ -1902,6 +2031,14 @@ static void Scl_StepOnce(void)
                     s_pc = next;
                     return;
                 }
+#if (SCL_CFG_CMDDESC_EN != 0u)
+                /* 带描述的"表格式命令"：调用前按参数模板校验（不符已打印 usage） */
+                if (Scl_DescCheck(nd, argc) != 0)
+                {
+                    Scl_Finish(1);
+                    return;
+                }
+#endif
                 if (nd->sync != NULL)
                 {
                     s_wait_cmd = nd;   /* 异步：先登记等待，再发起 */
