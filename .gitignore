@@ -15,6 +15,10 @@ build/
 .idea/
 *.swp
 
+# Python
+__pycache__/
+*.py[cod]
+
 # 日志 / 临时文件
 *.log
 tmp/
