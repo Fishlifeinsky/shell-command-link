@@ -93,6 +93,24 @@ typedef struct scl_cmd
     uint16_t             opc;    /* 字节码 opcode（SCL_RegisterCmd 自动分配，勿手填） */
 } scl_cmd_t;
 
+/**
+  * @brief  预编译只读脚本程序（由上层工具把脚本编译为 const 数组后静态定义）
+  * @note   数据放在只读存储区（Flash/ROM），执行时 SCL_RunProg() 直接解释，
+  *         不占用 RAM 字节码/参数缓存/label 表 —— 脚本固定不变时最省 RAM 的用法。
+  *         bc   ：字节码，每条指令 4 字节 = opc(2B 大端) + argOff(2B 大端)；
+  *                注册命令调用使用"按名调用"指令（命令名存于参数区，无需匹配
+  *                运行时注册顺序，见 doc）；
+  *         argc ：参数字节缓存（type 块序列，argOff==0 表示无参，缓存第 0 字节为哨兵）
+  * @see    tools/ 下生成器 / doc/arc/scl-const-prog.md
+  */
+typedef struct scl_prog
+{
+    const uint8_t *bc;       /* 字节码（Flash） */
+    uint16_t       bc_len;   /* 字节码字节数（4 的倍数） */
+    const uint8_t *argc;     /* 参数字节缓存（Flash） */
+    uint16_t       arg_len;  /* 参数字节缓存字节数 */
+} scl_prog_t;
+
 /* ============================ 生命周期 ============================ */
 
 /**
@@ -105,9 +123,23 @@ void SCL_Init(void);
   * @brief  提交一条指令链（脚本）开始执行
   * @param  script 以 '\0' 结尾的脚本字符串（内部拷贝，调用后缓冲可复用）
   * @retval 1=已接受并置忙；0=忙中拒绝 / 脚本超长 / 为空
-  * @note   一次只运行一个脚本；完成后变量自动全部释放、G_RETURN 清零
+  * @note   一次只运行一个脚本；完成后变量自动全部释放、G_RETURN 清零。
+  *         仅当 SCL_CFG_RUN_TEXT_EN=1 时可用（运行时编译，占 RAM）
   */
+#if (SCL_CFG_RUN_TEXT_EN != 0u)
 uint8_t SCL_Run(const char *script);
+#endif
+
+#if (SCL_CFG_RUN_PROG_EN != 0u)
+/**
+  * @brief  开始执行预编译只读程序（const 数据，放 Flash）
+  * @param  prog 程序描述；bc/argc 必须非空且为合法预编译产物
+  * @retval 1=已接受并置忙；0=忙中拒绝 / 参数非法
+  * @note   语义与 SCL_Run 相同（变量/G_RETURN/异步命令/步进保护）；
+  *         须在命令注册完成后再启动。运行期间不占用字节码/参数缓存 RAM
+  */
+uint8_t SCL_RunProg(const scl_prog_t *prog);
+#endif
 
 /**
   * @brief  主循环周期调用：推进脚本执行（含异步命令的完成轮询）

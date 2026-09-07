@@ -72,6 +72,25 @@ extern "C" {
 #define SCL_CFG_STEP_LIMIT       100000u
 #endif
 
+/* ============================ 执行源（可裁剪） ============================ */
+
+/* 动态文本脚本支持：SCL_Run() 读取文本 → 运行时编译进 RAM 字节码/参数缓存执行。
+   1=支持（占 RAM：字节码/参数缓存/label 表/中间指令表）；
+   0=裁剪整段（省 RAM，需用 Flash 预编译程序 SCL_RunProg 执行固定脚本） */
+#ifndef SCL_CFG_RUN_TEXT_EN
+#define SCL_CFG_RUN_TEXT_EN      1u
+#endif
+
+/* 预编译只读程序支持：SCL_RunProg() 直接解释 const 程序（数据放 Flash，几乎不占 RAM）。
+   1=支持；0=裁剪 */
+#ifndef SCL_CFG_RUN_PROG_EN
+#define SCL_CFG_RUN_PROG_EN      1u
+#endif
+
+#if ((SCL_CFG_RUN_TEXT_EN) == 0u) && ((SCL_CFG_RUN_PROG_EN) == 0u)
+#error "SCL_CFG_RUN_TEXT_EN 与 SCL_CFG_RUN_PROG_EN 至少需一个为 1"
+#endif
+
 /* ============================ 命令参数 ============================ */
 
 /* 单条命令最大参数个数（argv 数组长度） */

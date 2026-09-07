@@ -97,6 +97,10 @@ enum
     SCL_OP_SEQ  = 0x0026u,  /* seq  a b   : G_RETURN = (文本 a==b) */
     SCL_OP_SNEQ = 0x0027u,  /* sneq a b   : G_RETURN = (文本 a!=b) */
 
+    /* v0.3：预编译程序"按名调用"注册命令（argOff 指向参数区 = [total][STR 命令名][参数块...]；
+       用于 SCL_RunProg 的 Flash 只读程序，免依赖运行时命令注册顺序） */
+    SCL_OP_CALLN = 0x0028u,
+
     SCL_OP_CMD_BASE = 0x0100u  /* 注册命令 opcode 起点（自动递增） */
 };
 
@@ -127,12 +131,19 @@ typedef struct
 
 static scl_var_t s_vars[SCL_CFG_VAR_MAX];
 
-/* ---- 字节码程序（编译产物，跨 tick 持久） ---- */
+/* ---- 当前执行程序：bc/argc 只读访问（可指向 RAM 动态编译产物，或 Flash const 预编译程序）。
+     SCL_Run 动态路径把 s_bc/s_argc 挂到 s_prog；SCL_RunProg 直接挂 const 程序 */
+static scl_prog_t s_prog;                 /* 激活程序；bc==NULL 表示未装载 */
+
+#if (SCL_CFG_RUN_TEXT_EN != 0u)
+/* ---- 字节码程序（SCL_Run 动态编译产物，跨 tick 持久） ---- */
 static uint8_t  s_bc[SCL_CFG_BC_MAX];       /* 每条指令 4 字节 */
 static uint16_t s_bc_len = 0u;              /* 有效字节数（4 的倍数） */
+#endif
 static uint16_t s_pc     = 0u;              /* 程序计数器（解释执行） */
 static uint32_t s_steps  = 0u;              /* 本脚本已执行步数（步进保护） */
 
+#if (SCL_CFG_RUN_TEXT_EN != 0u)
 /* ---- 参数字节缓存：每条指令参数区 = [total(1)][type 块序列]，argOff 指向 total 字节。
      type 块（type 开头，无空格分隔）：
        BOOL=0x01+v(1) | INT=0x02+4B 大端 | FLAG=0x03+c(1) | STR=0x04+len(1)+bytes
@@ -140,7 +151,7 @@ static uint32_t s_steps  = 0u;              /* 本脚本已执行步数（步进
 static uint8_t  s_argc[SCL_CFG_ARG_CACHE_MAX];
 static uint16_t s_arg_len = 0u;
 
-/* ---- label 表：label 名 → 下一条指令字节偏移 ---- */
+/* ---- label 表：label 名 → 下一条指令字节偏移（仅编译期用，编译后回填为绝对偏移） ---- */
 typedef struct
 {
     char     name[SCL_CFG_LABEL_NAME_MAX + 1u];
@@ -148,6 +159,7 @@ typedef struct
 } scl_label_t;
 static scl_label_t s_labels[SCL_CFG_LABEL_MAX];
 static uint8_t     s_label_cnt = 0u;
+#endif
 
 /* ---- 条件标志 G_RETURN ---- */
 static uint8_t s_ret = 0u;
@@ -163,6 +175,8 @@ static char  s_raw[SCL_RAW_MAX];             /* 从缓存取出的参数原文�
 static char  s_argb[SCL_CFG_ARG_MAX][SCL_CFG_ARG_LEN_MAX];
 static char *s_argv[SCL_CFG_ARG_MAX];
 static uint8_t s_argt[SCL_CFG_ARG_MAX];       /* 当前命令各参数 type（SCL_ArgType 用） */
+#define SCL_CMDNAME_MAX 32u                   /* CALLN 命令名缓冲长度（含 '\0'） */
+static char s_cmdname[SCL_CMDNAME_MAX];       /* CALLN：当前按名调用命令名（运行工作区） */
 
 /* ========================== 文本小工具（不依赖 libc） ========================== */
 
@@ -360,6 +374,7 @@ static uint16_t Scl_FmtI32(int32_t val, char *dst, uint16_t cap)
 
 /* 编译期字面量 token 归类（命令参数）：返回 SCL_T_*；
    FLAG→*iv=字符代码；BOOL→0/1；INT→数值；无法定类一律 STR（*iv 忽略） */
+#if (SCL_CFG_RUN_TEXT_EN != 0u)
 static uint8_t Scl_LitType(const char *s, uint16_t len, int32_t *iv)
 {
     if ((len == 2u) && (s[0] == '-') && Scl_IsAl(s[1]))
@@ -388,6 +403,7 @@ static uint8_t Scl_LitType(const char *s, uint16_t len, int32_t *iv)
     }
     return SCL_T_STR;
 }
+#endif /* SCL_CFG_RUN_TEXT_EN */
 
 /* 十进制/十六进制输出与消息（含内部小格式化 %s %c %d %u %x） */
 static void Scl_PutU32(uint32_t v)
@@ -954,6 +970,7 @@ static int Scl_ExpandCopy(const char *src, const char *end,
    type 块：BOOL=01+v(1) / INT=02+4B大端 / FLAG=03+c(1) / STR=04+len(1)+bytes
    缓存第 0 字节保留哨兵；argOff==0 表示无参数。 */
 
+#if (SCL_CFG_RUN_TEXT_EN != 0u)
 /* 块写入原语（追加到缓存尾，成功 0；缓存不足/超长返回 -1，不推进） */
 static int Scl_BlkPutBool(uint8_t v)
 {
@@ -1122,6 +1139,7 @@ static uint16_t Scl_ArgStoreTyped(const char *s, const char *end)
     }
     return off;
 }
+#endif /* SCL_CFG_RUN_TEXT_EN */
 
 /* 运行时（元指令）：从 aoff 读取整段原文（参数区须为单个 STR 块，不做 ${} 展开）。
    无参数/不符返回 NULL */
@@ -1133,16 +1151,16 @@ static const char *Scl_ArgLoad(uint16_t aoff)
     uint16_t i;
 
     if (aoff == 0u) { return NULL; }
-    if (aoff >= s_arg_len) { return NULL; }
-    total = s_argc[aoff];
-    if ((uint16_t)(aoff + 1u + total) > s_arg_len) { return NULL; }
+    if (aoff >= s_prog.arg_len) { return NULL; }
+    total = s_prog.argc[aoff];
+    if ((uint16_t)(aoff + 1u + total) > s_prog.arg_len) { return NULL; }
     o = aoff + 1u;
     if (total == 0u) { return ""; }
-    if ((s_argc[o] != SCL_T_STR) || (total < 2u)) { return NULL; }
-    len = s_argc[o + 1u];
+    if ((s_prog.argc[o] != SCL_T_STR) || (total < 2u)) { return NULL; }
+    len = s_prog.argc[o + 1u];
     if ((uint16_t)(2u + len) > total) { return NULL; }
     if (len >= SCL_RAW_MAX) { return NULL; }
-    for (i = 0u; i < len; i++) { s_raw[i] = (char)s_argc[o + 2u + i]; }
+    for (i = 0u; i < len; i++) { s_raw[i] = (char)s_prog.argc[o + 2u + i]; }
     s_raw[len] = '\0';
     return s_raw;
 }
@@ -1155,12 +1173,12 @@ static uint16_t Scl_BlkText(uint16_t o, char *dst, uint16_t cap)
     uint16_t len;
     uint16_t i;
 
-    if (o >= s_arg_len) { return 0xFFFFu; }
-    t = s_argc[o];
+    if (o >= s_prog.arg_len) { return 0xFFFFu; }
+    t = s_prog.argc[o];
     if (t == SCL_T_BOOL)
     {
-        if ((uint16_t)(o + 2u) > s_arg_len) { return 0xFFFFu; }
-        if (s_argc[o + 1u] != 0u)
+        if ((uint16_t)(o + 2u) > s_prog.arg_len) { return 0xFFFFu; }
+        if (s_prog.argc[o + 1u] != 0u)
         {
             if (cap < 5u) { return 0xFFFFu; }
             dst[0] = 't'; dst[1] = 'r'; dst[2] = 'u'; dst[3] = 'e'; dst[4] = '\0';
@@ -1175,28 +1193,28 @@ static uint16_t Scl_BlkText(uint16_t o, char *dst, uint16_t cap)
     if (t == SCL_T_INT)
     {
         int32_t v;
-        if ((uint16_t)(o + 5u) > s_arg_len) { return 0xFFFFu; }
-        v = (int32_t)(((uint32_t)s_argc[o + 1u] << 24) |
-                      ((uint32_t)s_argc[o + 2u] << 16) |
-                      ((uint32_t)s_argc[o + 3u] << 8) |
-                      (uint32_t)s_argc[o + 4u]);
+        if ((uint16_t)(o + 5u) > s_prog.arg_len) { return 0xFFFFu; }
+        v = (int32_t)(((uint32_t)s_prog.argc[o + 1u] << 24) |
+                      ((uint32_t)s_prog.argc[o + 2u] << 16) |
+                      ((uint32_t)s_prog.argc[o + 3u] << 8) |
+                      (uint32_t)s_prog.argc[o + 4u]);
         if (Scl_FmtI32(v, dst, cap) == 0u) { return 0xFFFFu; }
         return (uint16_t)(o + 5u);
     }
     if (t == SCL_T_FLAG)
     {
-        if ((uint16_t)(o + 2u) > s_arg_len) { return 0xFFFFu; }
+        if ((uint16_t)(o + 2u) > s_prog.arg_len) { return 0xFFFFu; }
         if (cap < 3u) { return 0xFFFFu; }
-        dst[0] = '-'; dst[1] = (char)s_argc[o + 1u]; dst[2] = '\0';
+        dst[0] = '-'; dst[1] = (char)s_prog.argc[o + 1u]; dst[2] = '\0';
         return (uint16_t)(o + 2u);
     }
     if (t == SCL_T_STR)
     {
         const char *sb;
-        if ((uint16_t)(o + 2u) > s_arg_len) { return 0xFFFFu; }
-        len = s_argc[o + 1u];
-        if ((uint16_t)(o + 2u + len) > s_arg_len) { return 0xFFFFu; }
-        sb = (const char *)&s_argc[o + 2u];
+        if ((uint16_t)(o + 2u) > s_prog.arg_len) { return 0xFFFFu; }
+        len = s_prog.argc[o + 1u];
+        if ((uint16_t)(o + 2u + len) > s_prog.arg_len) { return 0xFFFFu; }
+        sb = (const char *)&s_prog.argc[o + 2u];
         if (Scl_ExpandCopy(sb, sb + len, dst, cap) < 0) { return 0xFFFFu; }
         return (uint16_t)(o + 2u + len);
     }
@@ -1205,28 +1223,19 @@ static uint16_t Scl_BlkText(uint16_t o, char *dst, uint16_t cap)
     return 0xFFFFu;   /* 未知 type */
 }
 
-/* 运行时：还原某指令参数区为 argv（type 块 → 文本；STR 展开 ${}；记录各参数 type）。
-   返回 argc；0=无参数；负=错误 */
-static int Scl_ArgRestore(uint16_t aoff)
+/* 运行时：从参数区中段 o 开始还原参数至 end（type 块 → 文本；STR 展开 ${}；记录各参数 type）。
+   返回 argc；负=错误 */
+static int Scl_ArgRestoreAt(uint16_t o, uint16_t end)
 {
-    uint16_t total;
-    uint16_t end;
-    uint16_t o;
     int ai = 0;
 
-    if (aoff == 0u) { return 0; }
-    if (aoff >= s_arg_len) { return -1; }
-    total = s_argc[aoff];
-    if ((uint16_t)(aoff + 1u + total) > s_arg_len) { return -1; }
-    end = (uint16_t)(aoff + 1u + total);
-    o = aoff + 1u;
     while (o < end)
     {
         uint16_t nxt;
         if (ai >= (int)SCL_CFG_ARG_MAX) { return -3; }
         nxt = Scl_BlkText(o, s_argb[ai], SCL_CFG_ARG_LEN_MAX);
         if (nxt == 0xFFFFu) { return -4; }
-        s_argt[ai] = (uint8_t)s_argc[o];   /* 参数原始 type */
+        s_argt[ai] = (uint8_t)s_prog.argc[o];   /* 参数原始 type */
         s_argv[ai] = s_argb[ai];
         ai++;
         if (nxt <= o) { break; }   /* 防死循环 */
@@ -1235,7 +1244,69 @@ static int Scl_ArgRestore(uint16_t aoff)
     return ai;
 }
 
+/* 运行时：还原某指令参数区为 argv（type 块 → 文本；STR 展开 ${}；记录各参数 type）。
+   返回 argc；0=无参数；负=错误 */
+static int Scl_ArgRestore(uint16_t aoff)
+{
+    uint16_t total;
+    uint16_t end;
+
+    if (aoff == 0u) { return 0; }
+    if (aoff >= s_prog.arg_len) { return -1; }
+    total = s_prog.argc[aoff];
+    if ((uint16_t)(aoff + 1u + total) > s_prog.arg_len) { return -1; }
+    end = (uint16_t)(aoff + 1u + total);
+    return Scl_ArgRestoreAt(aoff + 1u, end);
+}
+
+/* 运行时：执行"按名调用"注册命令（预编译 const 程序 SCL_RunProg 专用；不依赖命令注册顺序）。
+   aoff 指向参数区 = [total][STR 命令名][参数 type 块...]；命令名块不做 ${} 展开。
+   内部查命令链表并调用；返回 0=已执行；负=错误（-1 格式错；-2 未知命令） */
+static int Scl_DoCallName(uint16_t aoff)
+{
+    uint16_t total;
+    uint16_t o;
+    uint16_t nl;
+    uint16_t k;
+    int  argc;
+    scl_cmd_t *nd;
+
+    if (aoff == 0u) { return -1; }
+    if (aoff >= s_prog.arg_len) { return -1; }
+    total = s_prog.argc[aoff];
+    if ((uint16_t)(aoff + 1u + total) > s_prog.arg_len) { return -1; }
+    o = aoff + 1u;
+    if (total == 0u) { return -1; }                       /* 至少应有命令名 */
+    if (s_prog.argc[o] != SCL_T_STR) { return -1; }      /* 首块须为 STR 命令名 */
+    nl = s_prog.argc[o + 1u];
+    if ((uint16_t)(o + 2u + nl) > (uint16_t)(aoff + 1u + total)) { return -1; }
+    if ((nl == 0u) || (nl >= SCL_CMDNAME_MAX)) { return -1; }
+    for (k = 0u; k < nl; k++) { s_cmdname[k] = (char)s_prog.argc[o + 2u + k]; }
+    s_cmdname[nl] = '\0';
+    o = (uint16_t)(o + 2u + nl);
+
+    nd = Scl_CmdFindName(s_cmdname, nl);
+    if (nd == NULL)
+    {
+        Scl_MsgErr("未知命令 '%s'", s_cmdname);
+        return -2;
+    }
+    argc = Scl_ArgRestoreAt(o, (uint16_t)(aoff + 1u + total));
+    if (argc < 0)
+    {
+        Scl_MsgErr("命令参数错误(%d)", argc);
+        return -1;
+    }
+    if (nd->sync != NULL)
+    {
+        s_wait_cmd = nd;   /* 异步：先登记等待，再发起 */
+    }
+    nd->fn(argc, s_argv);
+    return 0;
+}
+
 /* ============ 内置 int/bool 运算指令保留字表（参考 C） ============ */
+#if (SCL_CFG_RUN_TEXT_EN != 0u)
 
 typedef struct
 {
@@ -1584,6 +1655,7 @@ static uint8_t Scl_Compile(const char *script)
     }
     return 1u;
 }
+#endif /* SCL_CFG_RUN_TEXT_EN */
 
 /* ========================== 内置命令：help / var / free ========================== */
 
@@ -1808,9 +1880,15 @@ static void Scl_Finish(int reason)
     s_wait_cmd = NULL;
     s_pc       = 0u;
     s_steps    = 0u;
+    s_prog.bc  = NULL;
+    s_prog.bc_len = 0u;
+    s_prog.argc = NULL;
+    s_prog.arg_len = 0u;
+#if (SCL_CFG_RUN_TEXT_EN != 0u)
     s_bc_len   = 0u;
     s_arg_len  = 0u;
     s_label_cnt = 0u;
+#endif
     s_abort    = 0u;
     SCL_VarFreeAll();
     s_ret      = 0u;
@@ -1986,7 +2064,7 @@ static void Scl_StepOnce(void)
     uint16_t aoff;
     uint16_t next;
 
-    if (s_pc >= s_bc_len)
+    if ((s_prog.bc == NULL) || (s_pc >= s_prog.bc_len))
     {
         Scl_Finish(0);   /* 程序末尾 → 自然完成 */
         return;
@@ -2001,14 +2079,14 @@ static void Scl_StepOnce(void)
         return;
     }
 #endif
-    opc = (uint16_t)(((uint16_t)s_bc[s_pc] << 8) | s_bc[s_pc + 1u]);
-    aoff = (uint16_t)(((uint16_t)s_bc[s_pc + 2u] << 8) | s_bc[s_pc + 3u]);
+    opc = (uint16_t)(((uint16_t)s_prog.bc[s_pc] << 8) | s_prog.bc[s_pc + 1u]);
+    aoff = (uint16_t)(((uint16_t)s_prog.bc[s_pc + 2u] << 8) | s_prog.bc[s_pc + 3u]);
     next = (uint16_t)(s_pc + 4u);
 
     switch (opc)
     {
     case SCL_OP_JUMP:
-        if (aoff >= s_bc_len)
+        if (aoff >= s_prog.bc_len)
         {
             Scl_MsgErr("jump: 目标越界");
             Scl_Finish(1);
@@ -2020,7 +2098,7 @@ static void Scl_StepOnce(void)
     case SCL_OP_JUMPA:
         if (Scl_RetTake() != 0)
         {
-            if (aoff >= s_bc_len)
+            if (aoff >= s_prog.bc_len)
             {
                 Scl_MsgErr("jump -a: 目标越界");
                 Scl_Finish(1);
@@ -2050,6 +2128,17 @@ static void Scl_StepOnce(void)
         return;
 
     default:
+        if (opc == SCL_OP_CALLN)
+        {
+            /* 预编译程序按名调用注册命令 */
+            if (Scl_DoCallName(aoff) != 0)
+            {
+                Scl_Finish(1);
+                return;
+            }
+            s_pc = next;
+            return;
+        }
         if ((opc == SCL_OP_SEQ) || (opc == SCL_OP_SNEQ))
         {
             int argc = Scl_ArgRestore(aoff);
@@ -2121,14 +2210,21 @@ void SCL_Init(void)
     s_abort     = 0u;
     s_wait_cmd  = NULL;
     s_pc        = 0u;
+    s_prog.bc   = NULL;
+    s_prog.bc_len = 0u;
+    s_prog.argc = NULL;
+    s_prog.arg_len = 0u;
+#if (SCL_CFG_RUN_TEXT_EN != 0u)
     s_bc_len    = 0u;
     s_arg_len   = 0u;
     s_label_cnt = 0u;
+#endif
     s_ret       = 0u;
     SCL_VarFreeAll();
     s_inited    = 1u;
 }
 
+#if (SCL_CFG_RUN_TEXT_EN != 0u)
 uint8_t SCL_Run(const char *script)
 {
     uint16_t i;
@@ -2170,6 +2266,12 @@ uint8_t SCL_Run(const char *script)
         return 0u;
     }
 
+    /* 装载动态编译产物到当前程序描述（RAM） */
+    s_prog.bc     = s_bc;
+    s_prog.bc_len = s_bc_len;
+    s_prog.argc   = s_argc;
+    s_prog.arg_len = s_arg_len;
+
     /* 启动执行 */
     s_pc      = 0u;
     s_steps   = 0u;
@@ -2179,6 +2281,42 @@ uint8_t SCL_Run(const char *script)
     s_busy    = 1u;
     return 1u;
 }
+#endif /* SCL_CFG_RUN_TEXT_EN */
+
+#if (SCL_CFG_RUN_PROG_EN != 0u)
+uint8_t SCL_RunProg(const scl_prog_t *prog)
+{
+    if (s_inited == 0u)
+    {
+        SCL_Init();
+    }
+    if (s_busy != 0u)
+    {
+        Scl_MsgErr("busy: 有脚本正在执行");
+        return 0u;
+    }
+    if ((prog == NULL) || (prog->bc == NULL) || (prog->argc == NULL))
+    {
+        return 0u;
+    }
+    if ((prog->bc_len == 0u) || ((prog->bc_len % 4u) != 0u) || (prog->arg_len == 0u))
+    {
+        return 0u;   /* 非法程序描述 */
+    }
+
+    /* 装载只读程序（Flash const），运行期不占用字节码/参数缓存 RAM */
+    s_prog = *prog;
+
+    /* 启动执行 */
+    s_pc      = 0u;
+    s_steps   = 0u;
+    s_wait_cmd = NULL;
+    s_abort   = 0u;
+    s_ret     = 0u;
+    s_busy    = 1u;
+    return 1u;
+}
+#endif /* SCL_CFG_RUN_PROG_EN */
 
 void SCL_Loop(void)
 {

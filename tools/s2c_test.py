@@ -197,6 +197,150 @@ def run_chain(chain, tag):
     return (r.stdout + r.stderr).decode("utf-8", "replace")
 
 
+# ---------- 4. 预编译 const C 程序（scl_emit_c + SCL_RunProg，省 RAM） ----------
+
+EMITC_MAIN = r'''
+#include <stdio.h>
+#include <string.h>
+#include "scl.h"
+#include "scl_port.h"
+#include "demo_cmds.h"
+typedef struct { const char *name; const scl_prog_t *prog; } P;
+'''
+EMITC_MAIN_TAIL = r'''
+static const P s_progs[] = {
+'''
+# 尾部由代码追加 + 收尾
+
+
+def _emitc_main_c(progs):
+    """生成逐 tag 运行 runner 的 main 源。progs=[(tag, c_text, subs)]"""
+    lines = [EMITC_MAIN]
+    for tag, _c, _s in progs:
+        lines.append('extern const scl_prog_t scl_%s_prog;' % tag)
+    lines.append(EMITC_MAIN_TAIL)
+    for tag, _c, _s in progs:
+        lines.append('    { "%s", &scl_%s_prog },' % (tag, tag))
+    lines.append('};')
+    lines.append(r'''
+int main(int argc, char *argv[])
+{
+    unsigned i;
+    const P *p = NULL;
+    long guard = 0;
+    if (argc < 2) { printf("[NO-TAG]\n"); return 2; }
+    for (i = 0; i < (unsigned)(sizeof(s_progs)/sizeof(s_progs[0])); i++)
+    {
+        if (strcmp(s_progs[i].name, argv[1]) == 0) { p = &s_progs[i]; break; }
+    }
+    if (p == NULL) { printf("[NO-PROG]\n"); return 2; }
+    SCL_Init();
+    Scl_Demo_Register();
+    if (SCL_RunProg(p->prog) == 0) { printf("[RUN-REJECT]\n"); return 2; }
+    while (!SCL_Idle())
+    {
+        SCL_Loop();
+        guard++;
+        if (guard > 5000000L)
+        {
+            SCL_Abort();
+            while (!SCL_Idle()) { SCL_Loop(); }
+            printf("[RUN-TIMEOUT]\n");
+            return 3;
+        }
+    }
+    printf("[RUN-OK]\n");
+    return 0;
+}
+''')
+    return "\n".join(lines)
+
+
+def test_emitc():
+    section("4. 预编译 const C 程序（scl_emit_c + SCL_RunProg，省 RAM）")
+    try:
+        import scl_emit_c as ec
+    except Exception as e:  # noqa: BLE001
+        check(False, "import scl_emit_c 失败: %s" % e)
+        return
+
+    # (tag, 源文件路径 or None, 现代源码 or None, 期望子串)
+    cases = [
+        ("demo1_if", str(ROOT / "example" / "s2c" / "demo1_if.s2c"), None,
+         ["echo mode ok", "echo done", "RUN-OK"]),
+        ("demo4_control", str(ROOT / "example" / "s2c" / "demo4_control.s2c"), None,
+         ["echo even-sum=20", "echo idle-ok", "echo debug-on", "RUN-OK"]),
+        ("arith", None,
+         "var int a=7\nvar int b=2\na = a + b\nb = a * 2\necho(\"a=${a} b=${b}\")",
+         ["echo a=9 b=18", "RUN-OK"]),
+        ("logic", None,
+         "var bool p=true\nvar bool q=false\n"
+         "if ((p && q) || !q) { echo(Y) } else { echo(N) }",
+         ["echo Y", "RUN-OK"]),
+        ("forb", None,
+         "for (var int i=0; i < 10; i = i + 1) {\n"
+         "  if (i == 2) { break }\n  echo(\"b${i}\")\n}\necho(over)",
+         ["echo b0", "echo b1", "echo over", "RUN-OK"]),
+        ("strst", None,
+         'var string st="idle"\nif (st == "ok") { echo(N) } else { echo(Y) }\n'
+         'st = "ok"\nif (st == "ok") { echo(now) }',
+         ["echo Y", "echo now", "RUN-OK"]),
+    ]
+
+    (ROOT / "build").mkdir(exist_ok=True)
+    progs = []
+    ok = True
+    for tag, path, src, subs in cases:
+        try:
+            if path is not None:
+                src_txt = pathlib.Path(path).read_text(encoding="utf-8")
+            else:
+                src_txt = src
+            chain, _ = ec.translate(src_txt)
+            bc, argc = ec.encode_chain(chain)
+            progs.append((tag, ec.emit_c(tag, bc, argc, tag), subs))
+        except Exception as e:  # noqa: BLE001
+            check(False, "emit-c %s 生成失败: %s" % (tag, e))
+            ok = False
+    if not ok:
+        return
+
+    (ROOT / "build" / "_emitc_progs.c").write_text(
+        "\n".join(p[1] for p in progs), encoding="utf-8")
+    (ROOT / "build" / "_emitc_main.c").write_text(
+        _emitc_main_c(progs), encoding="utf-8")
+
+    # 两种变体都验证：默认（动态+预编译都开）与 RUN_TEXT_EN=0（纯预编译，RAM 最小）
+    for exe_name, extra_cfg in (("prog_runner.exe", []),
+                                ("prog_min.exe", ["-DSCL_CFG_RUN_TEXT_EN=0"])):
+        exe = ROOT / "build" / exe_name
+        cmd = ["gcc", "-O2", "-pipe"] + RUNNER_CFG + extra_cfg + [
+            "-I", str(ROOT / "scl" / "Inc"), "-I", str(ROOT / "example"),
+            str(ROOT / "scl" / "Src" / "scl.c"),
+            str(ROOT / "example" / "scl_port.c"),
+            str(ROOT / "example" / "demo_cmds.c"),
+            str(ROOT / "build" / "_emitc_progs.c"),
+            str(ROOT / "build" / "_emitc_main.c"),
+            "-o", str(exe)]
+        r = subprocess.run(cmd, capture_output=True)
+        if r.returncode != 0:
+            check(False, "emit-c runner(%s) 编译失败" % exe_name)
+            err = (r.stderr.decode("utf-8", "replace").splitlines() or [""])[0]
+            print("  " + err)
+            continue
+        for tag, _c, subs in progs:
+            try:
+                rr = subprocess.run([str(exe), tag], capture_output=True, timeout=60)
+                out = (rr.stdout + rr.stderr).decode("utf-8", "replace")
+            except OSError:
+                out = ""
+            miss = [s for s in subs if s not in out]
+            check(not miss and "RUN-OK" in out,
+                  "emit-c %s [%s] %s%s" %
+                  (tag, exe_name, "OK" if not miss else "FAIL",
+                   (" missing=%s" % miss) if miss else ""))
+
+
 def test_feed():
     section("3. 回喂（真实 SCL 执行）")
     if not build_runner():
@@ -280,6 +424,7 @@ def main():
     test_unit()
     test_error()
     test_feed()
+    test_emitc()
     print("\n===== 汇总 =====")
     print("PASS=%d  FAIL=%d" % (PASS, FAIL))
     return 1 if FAIL else 0
