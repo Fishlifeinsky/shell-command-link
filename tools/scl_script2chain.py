@@ -153,14 +153,12 @@ def tokenize(src):
             adv()
             continue
 
-        # 比较/赋值/逻辑/算术/负号（两字符合并；单字符各自成 token）
-        if ch in "=<>!-+*/%&|":
+        # 比较/赋值/逻辑/算术/位/负号（两字符合并；单字符各自成 token）
+        if ch in "=<>!-+*/%&|^~":
             two = src[i:i + 2]
-            if two in ("==", "!=", "<=", ">=", "&&", "||"):
+            if two in ("==", "!=", "<=", ">=", "&&", "||", "<<", ">>"):
                 toks.append(Tok(two, two, l0, c0))
                 adv(2)
-            elif ch in "&|":
-                raise S2CError("逻辑运算请用 && / ||（单 %r 暂不支持）" % ch, line, col)
             else:
                 toks.append(Tok(ch, ch, l0, c0))
                 adv()
@@ -349,22 +347,82 @@ class Parser:
             break
         return "".join(parts)
 
-    # ---- 赋值语句右侧表达式（v0.2：单项 或 单运算符算术） ----
+    # ---- 赋值语句右侧表达式（v0.3：完整算术/位，优先级递归） ----
     def parse_expr(self):
-        left = self.parse_expr_operand()
-        t = self.cur()
-        if t.kind in ("+", "-", "*", "/", "%"):
+        return self.parse_bit_or()
+
+    def parse_bit_or(self):
+        left = self.parse_bit_xor()
+        while self.at("|", text="|"):
+            self.next()
+            right = self.parse_bit_xor()
+            left = ("bin", "|", left, right)
+        return left
+
+    def parse_bit_xor(self):
+        left = self.parse_bit_and()
+        while self.at("^", text="^"):
+            self.next()
+            right = self.parse_bit_and()
+            left = ("bin", "^", left, right)
+        return left
+
+    def parse_bit_and(self):
+        left = self.parse_shift()
+        while self.at("&", text="&"):
+            self.next()
+            right = self.parse_shift()
+            left = ("bin", "&", left, right)
+        return left
+
+    def parse_shift(self):
+        left = self.parse_add()
+        while self.at("<<", text="<<") or self.at(">>", text=">>"):
+            op = self.next().text
+            right = self.parse_add()
+            left = ("bin", op, left, right)
+        return left
+
+    def parse_add(self):
+        left = self.parse_mul()
+        while self.at("+", text="+") or self.at("-", text="-"):
             op = self.next().text
             self.skip_nl()
-            right = self.parse_expr_operand()
-            t2 = self.cur()
-            if t2.kind in ("+", "-", "*", "/", "%"):
-                raise S2CError("多运算符算术暂不支持（v0.3）：%r" % t2.text, t2.line, t2.col)
-            return ("bin", op, left, right)
-        return ("val", left)
+            right = self.parse_mul()
+            left = ("bin", op, left, right)
+        return left
 
-    def parse_expr_operand(self):
+    def parse_mul(self):
+        left = self.parse_unary()
+        while self.at("*", text="*") or self.at("/", text="/") or self.at("%", text="%"):
+            op = self.next().text
+            self.skip_nl()
+            right = self.parse_unary()
+            left = ("bin", op, left, right)
+        return left
+
+    def parse_unary(self):
+        if self.at("-", text="-"):
+            self.next()
+            x = self.parse_unary()
+            if x[0] == "num":
+                return ("num", "-" + x[1])   # 负字面量折叠
+            return ("neg", x)
+        if self.at("~", text="~"):
+            self.next()
+            return ("notb", self.parse_unary())
+        if self.at("+", text="+"):
+            self.next()
+            return self.parse_unary()
+        return self.parse_primary()
+
+    def parse_primary(self):
         t = self.cur()
+        if t.kind == "(" or t.text == "(":
+            self.next()
+            inner = self.parse_expr()
+            self.expect(text=")", what="')'")
+            return inner
         if t.kind == "NUM":
             self.next()
             return ("num", t.text)
@@ -372,26 +430,16 @@ class Parser:
             self.next()
             return ("str", t.text)
         if t.kind == "ID":
+            if t.text in ("true", "false"):
+                self.next()
+                return ("bool", t.text == "true")
             if t.text in RESERVED_CMD or t.text in SYNTAX_WORDS:
-                if t.text in ("true", "false"):
-                    self.next()
-                    return ("bool", t.text == "true")
                 raise S2CError("赋值右值不能为关键字 %r" % t.text, t.line, t.col)
             name = t.text
             self.next()
             if self.at("(", text="("):
                 raise S2CError("赋值右值暂不支持函数调用结果", t.line, t.col)
             return ("id", name)
-        if t.text == "-":
-            self.next()
-            u = self.cur()
-            if u.kind == "NUM":
-                self.next()
-                return ("num", "-" + u.text)
-            if u.kind == "ID" and u.text not in SYNTAX_WORDS and u.text not in RESERVED_CMD:
-                self.next()
-                return ("id", "-" + u.text)   # 负变量 → ineg
-            raise S2CError("负号后需要数字/变量", t.line, t.col)
         raise S2CError("赋值右值无法解析 %r" % t.text, t.line, t.col)
 
     def parse_free(self):
@@ -579,7 +627,9 @@ class Parser:
 # ============================ 编译器（输出 label/jump 线性汇编） ============================
 
 # v0.2：表达式 → 运行时内置运算指令（scl.h）
-INT_OPWORD = {"+": "iadd", "-": "isub", "*": "imul", "/": "idiv", "%": "imod"}
+INT_OPWORD = {"+": "iadd", "-": "isub", "*": "imul", "/": "idiv", "%": "imod",
+              "&": "iand", "|": "ior", "^": "ixor", "<<": "shl", ">>": "shr"}
+UNARY_OPWORD = {"neg": "ineg", "notb": "inot"}
 CMP_OPWORD = {"==": "ieq", "!=": "ine", "<": "ilt", "<=": "ile",
               ">": "igt", ">=": "ige"}
 
@@ -608,6 +658,7 @@ class Compiler:
         self.warnings = []
         self._label_seq = 0
         self.vtypes = {}      # v0.2：变量名 → bool/int/flag/string（编译期跟踪）
+        self._tmpn = 0        # v0.3：隐藏临时变量序号（__t0..）
 
     # ---- 标签 / 引号 ----
     def new_label(self):
@@ -670,7 +721,7 @@ class Compiler:
         elif k == "ret_set":
             lines.append(self.emit_call(self.ret_setter, [st[1]]))
         elif k == "assign":
-            lines.append(self.emit_assign(st[1], st[2]))
+            self.emit_assign(st[1], st[2], lines, vs)
         elif k == "if":
             self.emit_if(st, lines, vs, exp_stack)
         elif k == "while":
@@ -706,51 +757,95 @@ class Compiler:
         self.vtypes.clear()
         return "free"
 
-    # ---- v0.2 赋值语句：name = 单项 | name = a op b（算术结果写回目标变量） ----
-    def emit_assign(self, name, expr):
+    # ---- 赋值语句：name = expr（v0.3：完整算术/位，多运算符，用隐藏临时变量 __t） ----
+    def emit_assign(self, name, expr, lines, vs):
         typ = self.vtypes.get(name)
         if typ is None:
             raise S2CError("赋值目标 %r 需先用 var 声明" % name)
-        if expr[0] == "val":
-            opd = expr[1]
-            if opd[0] == "id":
-                txt = opd[1]
-                if txt.startswith("-"):
-                    self.vtypes[name] = "int"
-                    return "ineg %s %s" % (txt[1:], name)   # 取负写回
-                return "var %s %s=${%s}" % (typ, name, txt)   # 变量拷贝
-            if opd[0] == "bool":
-                return "var %s %s=%s" % (typ, name, "true" if opd[1] else "false")
-            if opd[0] == "str":
-                if typ != "string":
-                    raise S2CError("字符串不能赋给 %s 变量 %r" % (typ, name))
-                return "var string %s=%s" % (name, self.quote_lit(opd[1]))
-            # num 字面量
-            if typ not in ("int", "bool"):
-                raise S2CError("数字不能赋给 %s 变量 %r" % (typ, name))
-            return "var %s %s=%s" % (typ, name, opd[1])
-        # bin：a op b → 算术指令写回
-        _, op, L, R = expr
-        if typ != "int":
-            raise S2CError("算术写回目标 %r 应为 int（当前 %s）" % (name, typ))
-        if op not in INT_OPWORD:
-            raise S2CError("不支持的算术运算符 %r" % op)
-        lt = self.opnd_text(L)
-        rt = self.opnd_text(R)
-        if lt is None or rt is None:
-            raise S2CError("算术操作数不支持（%r %r）" % (L, R))
-        self.vtypes[name] = "int"
-        return "%s %s %s %s" % (INT_OPWORD[op], lt, rt, name)
+        k = expr[0]
+        self._tmp_stack = []
+        try:
+            if typ == "string":
+                if k == "str":
+                    lines.append("var string %s=%s" % (name, self.quote_lit(expr[1])))
+                elif k == "id":
+                    lines.append("var string %s=${%s}" % (name, expr[1]))
+                else:
+                    raise S2CError("string 变量 %r 只能赋字符串/变量" % name)
+                return
+            if typ == "bool":
+                if k == "bool":
+                    lines.append("var bool %s=%s" % (name, "true" if expr[1] else "false"))
+                elif k == "id":
+                    lines.append("var bool %s=${%s}" % (name, expr[1]))
+                elif k == "num":
+                    lines.append("var bool %s=%s" % (name, expr[1]))
+                else:
+                    raise S2CError("bool 变量 %r 不支持该赋值" % name)
+                return
+            if typ != "int":
+                raise S2CError("算术写回目标 %r 应为 int（当前 %s）" % (name, typ))
+            self.emit_arith_to(name, expr, lines, vs)
+        finally:
+            for t in self._tmp_stack:
+                lines.append("free " + t)
+                vs.discard(t)
+                self.vtypes.pop(t, None)
+            self._tmp_stack = []
 
-    def opnd_text(self, opd):
-        k, v = opd[0], opd[1]
-        if k in ("num", "id", "str"):
-            if v.startswith("-"):
-                raise S2CError("算术中请勿内嵌负字面量（如 n = n - 1 中的 -1 应写 n - 1）")
-            return v
+    def alloc_temp(self, vs):
+        n = self._tmpn
+        self._tmpn += 1
+        nm = "__t%d" % n
+        vs.add(nm)
+        self.vtypes[nm] = "int"
+        self._tmp_stack.append(nm)
+        return nm
+
+    def emit_arith_to(self, dst, expr, lines, vs):
+        """把表达式 expr 求值为 int 写入变量 dst（int）"""
+        k = expr[0]
+        if k == "num":
+            lines.append("var int %s=%s" % (dst, expr[1]))
+            return
         if k == "bool":
-            return "1" if v else "0"
-        return None
+            lines.append("var int %s=%s" % (dst, "1" if expr[1] else "0"))
+            return
+        if k == "id":
+            lines.append("var int %s=${%s}" % (dst, expr[1]))
+            return
+        if k in ("neg", "notb"):
+            src = self.emit_operand(expr[1], lines, vs)
+            lines.append("%s %s %s" % (UNARY_OPWORD[k], src, dst))
+            return
+        if k == "bin":
+            _, op, L, R = expr
+            if op not in INT_OPWORD:
+                raise S2CError("不支持的运算符 %r" % op)
+            lt = self.emit_operand(L, lines, vs)
+            rt = self.emit_operand(R, lines, vs)
+            lines.append("%s %s %s %s" % (INT_OPWORD[op], lt, rt, dst))
+            return
+        if k == "str":
+            raise S2CError("字符串不能参与 int 运算")
+        raise S2CError("未知表达式节点 %r" % (expr,))
+
+    def emit_operand(self, expr, lines, vs):
+        """返回可作操作数的文本（变量名/字面量）；复合子式先求到隐藏临时变量"""
+        k = expr[0]
+        if k == "id":
+            return expr[1]
+        if k == "num":
+            return expr[1]
+        if k == "bool":
+            return "1" if expr[1] else "0"
+        if k == "str":
+            raise S2CError("字符串不能参与 int 运算")
+        if len(self._tmp_stack) >= 4:
+            raise S2CError("单表达式临时变量过多（>4），请拆开写")
+        t = self.alloc_temp(vs)
+        self.emit_arith_to(t, expr, lines, vs)
+        return t
 
     # ---- 条件 → 一组会产生 G_RETURN 的代码行（v0.3 支持 && || ! 括号短路） ----
     def emit_cond(self, cond, out, vs, exp_stack):
@@ -968,19 +1063,19 @@ class Compiler:
 
     @classmethod
     def clone_expr(cls, expr, sub):
-        if expr[0] == "val":
-            opd = expr[1]
-            if opd[0] == "id" and opd[1] in sub:
-                return ("val", ("id", sub[opd[1]]))
+        """赋值右侧表达式树克隆（fn 实参替换）"""
+        k = expr[0]
+        if k == "id":
+            nm = expr[1]
+            return ("id", sub[nm]) if nm in sub else expr
+        if k in ("num", "str", "bool"):
             return expr
-        op, L, R = expr[1], expr[2], expr[3]
-        return ("bin", op, cls.clone_expr_opd(L, sub), cls.clone_expr_opd(R, sub))
-
-    @staticmethod
-    def clone_expr_opd(opd, sub):
-        if opd[0] == "id" and opd[1] in sub:
-            return ("id", sub[opd[1]])
-        return opd
+        if k == "bin":
+            _, op, L, R = expr
+            return ("bin", op, cls.clone_expr(L, sub), cls.clone_expr(R, sub))
+        if k in ("neg", "notb"):
+            return (k, cls.clone_expr(expr[1], sub))
+        return expr
 
 
 # ============================ 顶层接口 ============================

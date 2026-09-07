@@ -107,9 +107,16 @@ def test_unit():
     unit_exact("var int a = 5\na = -a",
                "var int a=5;ineg a a",
                "赋值取负 → ineg")
-    unit_exact("var int a = 1\nvar int b = 2\na = b",
-               "var int a=1;var int b=2;var int a=${b}",
-               "变量拷贝 → var 覆盖")
+    # v0.3：多运算符算术/位运算（隐藏临时变量 __t0，用后 free）
+    unit_exact("var int x=10\nx = x + 1 + 2",
+               "var int x=10;iadd x 1 __t0;iadd __t0 2 x;free __t0",
+               "多运算符算术 a+b+c → 临时变量")
+    unit_exact("var int a=0x0f\nvar int x=0\nx = (a & 0x0f) | 0x10",
+               "var int a=0x0f;var int x=0;iand a 0x0f __t0;ior __t0 0x10 x;free __t0",
+               "位运算+括号优先 → iand/ior")
+    unit_exact("var int n=5\nn = -n + 1",
+               "var int n=5;ineg n __t0;iadd __t0 1 n;free __t0",
+               "单目负 + 加法 → ineg 临时")
 
 
 def unit_err(src, keyword, msg):
@@ -131,8 +138,6 @@ def test_error():
     unit_err("add(1,2", "')'", "缺右括号报错")
     unit_err("x 3", "需要 '('", "裸标识符语句报错")
     unit_err("var if = 1", "保留", "变量名用保留字报错")
-    unit_err("if (a & b) { echo(x) }", "&&", "单 & 提示用 &&")
-    unit_err("var int x=1\nx = x + 1 + 2", "多运算符", "多运算符算术 v0.3 报错")
     unit_err("y = 3", "需先用 var", "赋值未声明目标报错")
     unit_err("echo(\"a\" + \"b\")", "不允许", "实参中算术/比较未支持")
 
