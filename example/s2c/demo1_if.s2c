@@ -1,16 +1,20 @@
-# 演示1：变量 + 无条件 if/else（沿用上一条命令的 G_RETURN）
+# 演示1（v0.2）：类型化变量 + 比较表达式 if/else（降级为 ieq + label/jump）
 #
-# 说明：cmp 两数相等即置 G_RETURN=true；
-#       if { } else { } 不带条件 = 直接根据当前 G_RETURN 分支。
+# 说明：var int mode = 1 显式类型声明；
+#       if (mode == 1) 是原子比较表达式，编译器降级为：
+#         ieq mode 1; jump -a L1; <else>; jump L2; label L1; <then>; label L2
 
-var mode = 1
+var int mode = 1
 
-cmp(1, ${mode})
-
-if {
-    echo("mode", ${mode}, "ok")
+if (mode == 1) {
+    echo("mode ok")
 } else {
-    echo("mode", ${mode}, "ng")
+    echo("mode ng")
+}
+
+// 无条件 if{}：沿用当前 G_RETURN（这里 mode==1 为真，跳过 else）
+if { } else {
+    echo("should-not-print")
 }
 
 echo("done")

@@ -8,11 +8,20 @@
   *                label <名>            // 设置跳转点（不产字节，登记名→字节偏移）
   *                jump [-a|-b] <名>     // 跳转：-b/默认=无条件；-a=G_RETURN 为真才跳(读后清零)
   *            - SCL_Run() 先把指令链文本**编译成字节码**（每条指令 4 字节：
-  *                opc(2B) + argOff(2B)，参数存 [len][原文] 缓存；label 表登记跳转点），
-  *                然后主循环解释执行；无 if/while 文本（由上层编译器降级为 label/jump）
+  *                opc(2B) + argOff(2B)），然后主循环解释执行；
+  *                参数在入缓存时**同步解析成类型块**（type 开头，无空格间隔）：
+  *                  BOOL=0x01+v(1) | INT=0x02+4B 大端 | FLAG=0x03+c(1) | STR=0x04+len(1)+bytes
+  *                元指令（var/free/help/label/jump）参数按整段 STR 块存原文内部解析；
+  *                业务命令参数按字面量类型化；label 表登记跳转点
   *            - 命令在 SCL_RegisterCmd 时自动分配 opcode
-  *            - 变量：'var name=value'（数量/名长/值长由 scl_cfg.h 裁剪）、${name} 取值、
-  *              'free' 释放、脚本结束自动释放全部变量
+  *            - 变量：类型化声明 'var <type> <name>=<value>'，type ∈ bool/int/flag/string
+  *              （bool→true/false；int→十进制；flag→-x；string→原文）；${name} 取值、
+  *              'free' 释放、脚本结束自动释放全部变量；数量/名长/值长由 scl_cfg.h 裁剪
+  *            - 内置 int/bool 运算指令（参考 C，保留关键字）：
+  *                int 算术: iadd isub imul idiv imod ineg    —— op a b dst（结果写回变量）
+  *                int 比较: ieq ine igt ige ilt ile          —— op a b（结果进 G_RETURN）
+  *                bool    : band bor bnot                    —— op a [b]（结果进 G_RETURN）
+  *                btest 变量真值装载（bool/int≠0/flag 已定义） → G_RETURN
   *            - 条件标志 G_RETURN：默认 false，脚本开始/结束清零；被 jump -a 读取后自动清零；
   *              C 命令用 SCL_Ret_Set() 写入
   *            - 执行模型：异步/跨主循环步进。SCL_Run() 编译后立即返回并置 busy；
@@ -22,7 +31,8 @@
   *            - 全程静态内存、无 malloc；无 OS / HAL / libc 依赖
   *
   *          保留关键字（不能注册为业务命令）：var / free / help / label / jump
-  *            （if / while 已由上层编译器降级，运行时不再提供）
+  *            以及内置运算指令 iadd/isub/imul/idiv/imod/ineg/ieq/ine/igt/ige/ilt/ile/
+  *            band/bor/bnot/btest（if / while 已由上层编译器降级，运行时不再提供）
   *
   *          移植接口（用户提供）：
   *            void SCL_Port_PutChar(char c);   // 输出单字符（SCL_CFG_MSG_EN=0 时可不实现）
@@ -41,6 +51,17 @@ extern "C" {
 
 #include <stdint.h>
 #include <stdbool.h>
+
+/* ============================ 类型常量 ============================ */
+
+/* 参数/变量类型（参数字节块 type 首字节，亦作变量 type 字段） */
+enum
+{
+    SCL_T_BOOL = 0x01u,   /* bool ：块=type+值(1B 0/1)；变量存 true/false 文本 */
+    SCL_T_INT  = 0x02u,   /* int  ：块=type+值(4B 大端)；变量存十进制文本 */
+    SCL_T_FLAG = 0x03u,   /* flag ：块=type+字符(1B, 如 'x' 即 -x)；变量存 "-x" 文本 */
+    SCL_T_STR  = 0x04u    /* string：块=type+len(1B)+bytes；变量存原文 */
+};
 
 /* ============================ 类型定义 ============================ */
 
@@ -116,6 +137,16 @@ void SCL_Abort(void);
   */
 void SCL_RegisterCmd(scl_cmd_t *cmd);
 
+/* ============================ 参数类型查询（命令调用期间） ============================ */
+
+/**
+  * @brief  查询当前正在调用的命令第 idx 个参数的类型（供 C 命令区分 bool/int/flag/string）
+  * @param  idx 参数序号（0 起）
+  * @retval SCL_T_BOOL/SCL_T_INT/SCL_T_FLAG/SCL_T_STR；idx 越界或非命令上下文返回 0
+  * @note   仅在命令处理函数被调用期间有效（同 argv）
+  */
+int SCL_ArgType(int idx);
+
 /* ============================ 条件标志 G_RETURN ============================ */
 
 /**
@@ -133,19 +164,37 @@ int SCL_Ret_Get(void);
 /* ============================ 变量接口（供 C 命令使用） ============================ */
 
 /**
-  * @brief  取变量值
+  * @brief  取变量值（文本形态：bool→true/false；int→十进制；flag→"-x"；string→原文）
   * @param  name 变量名
   * @retval 值字符串指针（库内静态存储，脚本结束/释放后失效）；不存在返回 NULL
   */
 const char *SCL_VarGet(const char *name);
 
 /**
-  * @brief  设置/覆盖变量（供脚本 'var' 与 C 命令共用）
+  * @brief  查询变量类型
+  * @param  name 变量名
+  * @retval SCL_T_BOOL/INT/FLAG/STR；不存在返回 0
+  */
+uint8_t SCL_VarType(const char *name);
+
+/**
+  * @brief  设置/覆盖变量（供 C 命令使用，类型由值自动推断：
+  *         true/false→bool；-x 单字符→flag；十进制→int；其余→string）
   * @param  name 变量名（[A-Za-z_][A-Za-z0-9_]*，长度 <= SCL_CFG_VAR_NAME_MAX）
-  * @param  val  值（长度 <= SCL_CFG_VAR_VALUE_MAX-1）
-  * @retval 0=成功；-1=变量已满无空槽；-2=变量名非法/过长；-3=值过长；-4=变量名为空
+  * @param  val  值
+  * @retval 0=成功；-1=变量已满无空槽；-2=变量名非法/过长；-3=值过长/非法；-4=变量名为空
   */
 int SCL_VarSet(const char *name, const char *val);
+
+/**
+  * @brief  显式类型设置/覆盖变量（供脚本 'var' 与 C 命令共用，类型明确）
+  * @param  name 变量名（同 SCL_VarSet）
+  * @param  type SCL_T_BOOL/SCL_T_INT/SCL_T_FLAG/SCL_T_STR
+  * @param  val  值（按 type 校验并规范化：bool 接受 true/false/1/0；int 接受十进制；
+  *              flag 接受 "-x"；string 接受任意文本）
+  * @retval 0=成功；-1=变量已满无空槽；-2=变量名非法/过长；-3=值过长/非法；-4=变量名为空
+  */
+int SCL_VarSetT(const char *name, uint8_t type, const char *val);
 
 /**
   * @brief  释放指定变量（不存在则无操作）

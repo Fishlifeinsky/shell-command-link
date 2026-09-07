@@ -8,7 +8,7 @@
 # demo_inc()    : 计数+1；未达目标则置 G_RETURN=true（作为循环继续条件）
 # fn not_done() : 用户函数，作为 while 条件（编译期内联，每圈重跑）
 
-var sp = 100
+var int sp = 100
 
 fn not_done() {
     demo_inc()

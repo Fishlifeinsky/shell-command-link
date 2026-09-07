@@ -148,9 +148,20 @@ def tokenize(src):
             toks.append(Tok(kind, text, l0, c0))
             continue
 
-        if ch in "(){};,=":
+        if ch in "(){};,":
             toks.append(Tok(ch, ch, l0, c0))
             adv()
+            continue
+
+        # 比较/赋值/逻辑/算术/负号（两字符合并；单字符各自成 token）
+        if ch in "=<>!-+*/%":
+            two = src[i:i + 2]
+            if two in ("==", "!=", "<=", ">="):
+                toks.append(Tok(two, two, l0, c0))
+                adv(2)
+            else:
+                toks.append(Tok(ch, ch, l0, c0))
+                adv()
             continue
 
         raise S2CError("无法识别的字符 %r" % ch, line, col)
@@ -284,8 +295,12 @@ class Parser:
         if kw in RESERVED_CMD or kw in SYNTAX_WORDS:
             raise S2CError("此处不允许使用关键字 %r" % kw, t.line, t.col)
 
-        # 命令/函数调用：name(args)
+        # 命令/函数调用 name(args) 或 赋值语句 name = expr
         self.next()
+        if self.at("=", text="="):
+            self.next()
+            self.skip_nl()
+            return ("assign", kw, self.parse_expr())
         if self.at("(", text="("):
             self.next()
             args = self.parse_args_after_open()
@@ -294,8 +309,15 @@ class Parser:
         return ("call", kw, args)
 
     def parse_var(self):
-        t = self.next()
-        name_tok = self.cur()
+        # 支持 'var <type> <name>=<value>'（type ∈ bool/int/flag/string，可省略→自动推断）
+        self.next()   # 消费 var
+        t = self.cur()
+        typ = None
+        if t.kind == "ID" and t.text in ("bool", "int", "flag", "string"):
+            typ = t.text
+            self.next()
+            t = self.cur()
+        name_tok = t
         if name_tok.kind != "ID":
             raise S2CError("var 后需要变量名", name_tok.line, name_tok.col)
         if name_tok.text in SYNTAX_WORDS or name_tok.text in RESERVED_CMD:
@@ -305,7 +327,7 @@ class Parser:
         self.expect(text="=", what="'='")
         self.skip_nl()
         value = self.gather_value()
-        return ("var", name_tok.text, value)
+        return ("var", name_tok.text, typ, value)
 
     def gather_value(self):
         parts = []
@@ -318,8 +340,57 @@ class Parser:
                     parts.append(t.text)
                 self.next()
                 continue
+            if t.kind == "-" or t.text == "-":   # 负数字面量 / flag 的 '-x'
+                parts.append("-")
+                self.next()
+                continue
             break
         return "".join(parts)
+
+    # ---- 赋值语句右侧表达式（v0.2：单项 或 单运算符算术） ----
+    def parse_expr(self):
+        left = self.parse_expr_operand()
+        t = self.cur()
+        if t.kind in ("+", "-", "*", "/", "%"):
+            op = self.next().text
+            self.skip_nl()
+            right = self.parse_expr_operand()
+            t2 = self.cur()
+            if t2.kind in ("+", "-", "*", "/", "%"):
+                raise S2CError("多运算符算术暂不支持（v0.3）：%r" % t2.text, t2.line, t2.col)
+            return ("bin", op, left, right)
+        return ("val", left)
+
+    def parse_expr_operand(self):
+        t = self.cur()
+        if t.kind == "NUM":
+            self.next()
+            return ("num", t.text)
+        if t.kind == "STR":
+            self.next()
+            return ("str", t.text)
+        if t.kind == "ID":
+            if t.text in RESERVED_CMD or t.text in SYNTAX_WORDS:
+                if t.text in ("true", "false"):
+                    self.next()
+                    return ("bool", t.text == "true")
+                raise S2CError("赋值右值不能为关键字 %r" % t.text, t.line, t.col)
+            name = t.text
+            self.next()
+            if self.at("(", text="("):
+                raise S2CError("赋值右值暂不支持函数调用结果", t.line, t.col)
+            return ("id", name)
+        if t.text == "-":
+            self.next()
+            u = self.cur()
+            if u.kind == "NUM":
+                self.next()
+                return ("num", "-" + u.text)
+            if u.kind == "ID" and u.text not in SYNTAX_WORDS and u.text not in RESERVED_CMD:
+                self.next()
+                return ("id", "-" + u.text)   # 负变量 → ineg
+            raise S2CError("负号后需要数字/变量", t.line, t.col)
+        raise S2CError("赋值右值无法解析 %r" % t.text, t.line, t.col)
 
     def parse_free(self):
         self.next()
@@ -356,7 +427,10 @@ class Parser:
             self.p = save
         return ("if", cond, then_list, else_list)
 
-    def parse_cond(self):
+    CMP_OPS = ("==", "!=", "<=", ">=", "<", ">")
+
+    def parse_cond_atom(self):
+        """条件原子：true/false、命令调用(设 G_RETURN)、变量、字面量、! 取反"""
         t = self.cur()
         if t.kind == "ID":
             if t.text == "true":
@@ -372,10 +446,38 @@ class Parser:
             if self.at("(", text="("):
                 self.next()
                 args = self.parse_args_after_open()
-            else:
-                args = []
-            return ("call", name, args)
-        raise S2CError("条件需要为命令调用或 true/false", t.line, t.col)
+                return ("call", name, args)
+            return ("var", name)      # 变量真值 → btest
+        if t.kind == "NUM":
+            self.next()
+            return ("lit", t.text)
+        if t.text == "-":
+            self.next()
+            u = self.cur()
+            if u.kind == "NUM":
+                self.next()
+                return ("lit", "-" + u.text)
+            raise S2CError("条件负号后需要数字", t.line, t.col)
+        if t.text == "!":
+            self.next()
+            inner = self.parse_cond_atom()
+            if inner[0] == "call":
+                raise S2CError("'!' 后暂不支持命令调用（对 G_RETURN 取反留 v0.3）",
+                               t.line, t.col)
+            return ("not", inner)
+        raise S2CError("条件无法解析 %r" % t.text, t.line, t.col)
+
+    def parse_cond(self):
+        """条件：原子，或 原子 比较运算符 原子（a<b / a==b / ...）"""
+        left = self.parse_cond_atom()
+        t = self.cur()
+        if t.kind in self.CMP_OPS:
+            op = self.next().text
+            right = self.parse_cond_atom()
+            if left[0] == "call" or right[0] == "call":
+                raise S2CError("比较两侧不能是命令调用", t.line, t.col)
+            return ("cmp", op, left, right)
+        return left
 
     def parse_while(self):
         self.next()
@@ -450,6 +552,25 @@ class Parser:
 
 # ============================ 编译器（输出 label/jump 线性汇编） ============================
 
+# v0.2：表达式 → 运行时内置运算指令（scl.h）
+INT_OPWORD = {"+": "iadd", "-": "isub", "*": "imul", "/": "idiv", "%": "imod"}
+CMP_OPWORD = {"==": "ieq", "!=": "ine", "<": "ilt", "<=": "ile",
+              ">": "igt", ">=": "ige"}
+
+
+def infer_var_type(value):
+    """var 未显式类型时推断：true/false→bool；-x→flag；十进制→int；其余→string"""
+    v = value
+    if v.lower() in ("true", "false"):
+        return "bool"
+    body = v[1:] if v.startswith("-") else v
+    if body.isdigit():
+        return "int"
+    if len(v) == 2 and v[0] == "-" and v[1].isalpha():
+        return "flag"
+    return "string"
+
+
 class Compiler:
     def __init__(self, ret_setter="setret", var_max=2,
                  name_max=8, value_max=15):
@@ -460,6 +581,7 @@ class Compiler:
         self.fns = {}
         self.warnings = []
         self._label_seq = 0
+        self.vtypes = {}      # v0.2：变量名 → bool/int/flag/string（编译期跟踪）
 
     # ---- 标签 / 引号 ----
     def new_label(self):
@@ -516,11 +638,13 @@ class Compiler:
                 raise S2CError("不能调用保留命令 %r（SCL 内置）" % name)
             lines.append(self.emit_call(name, args))
         elif k == "var":
-            lines.append(self.emit_var(st[1], st[2], vs))
+            lines.append(self.emit_var(st[1], st[2], st[3], vs))
         elif k == "free":
             lines.append(self.emit_free(st[1], vs))
         elif k == "ret_set":
             lines.append(self.emit_call(self.ret_setter, [st[1]]))
+        elif k == "assign":
+            lines.append(self.emit_assign(st[1], st[2]))
         elif k == "if":
             self.emit_if(st, lines, vs, exp_stack)
         elif k == "while":
@@ -530,7 +654,7 @@ class Compiler:
         else:
             raise S2CError("未知 AST 节点 %r" % (k,))
 
-    def emit_var(self, name, value, vs):
+    def emit_var(self, name, typ, value, vs):
         if len(name) > self.name_max:
             raise S2CError("变量名 %r 过长（>%d）" % (name, self.name_max))
         if name in RESERVED_CMD or name in SYNTAX_WORDS:
@@ -540,29 +664,119 @@ class Compiler:
         vs.add(name)
         if len(vs) > self.var_max:
             raise S2CError("同时存活的变量超过 %d 个（含 %s）" % (self.var_max, name))
-        return "var " + name + "=" + self.quote_lit(value)
+        if typ is None:
+            typ = infer_var_type(value)   # v0.2：现代层允许省略类型（编译器推断）
+        self.vtypes[name] = typ
+        return "var %s %s=%s" % (typ, name, self.quote_lit(value))
 
     def emit_free(self, name, vs):
         if name is not None:
             if name not in vs:
                 raise S2CError("释放未定义的变量 %r" % name)
             vs.discard(name)
+            self.vtypes.pop(name, None)
             return "free " + name
         vs.clear()
+        self.vtypes.clear()
         return "free"
 
-    # ---- 条件 → 一组会产生 G_RETURN 的代码行 ----
+    # ---- v0.2 赋值语句：name = 单项 | name = a op b（算术结果写回目标变量） ----
+    def emit_assign(self, name, expr):
+        typ = self.vtypes.get(name)
+        if typ is None:
+            raise S2CError("赋值目标 %r 需先用 var 声明" % name)
+        if expr[0] == "val":
+            opd = expr[1]
+            if opd[0] == "id":
+                txt = opd[1]
+                if txt.startswith("-"):
+                    self.vtypes[name] = "int"
+                    return "ineg %s %s" % (txt[1:], name)   # 取负写回
+                return "var %s %s=${%s}" % (typ, name, txt)   # 变量拷贝
+            if opd[0] == "bool":
+                return "var %s %s=%s" % (typ, name, "true" if opd[1] else "false")
+            if opd[0] == "str":
+                if typ != "string":
+                    raise S2CError("字符串不能赋给 %s 变量 %r" % (typ, name))
+                return "var string %s=%s" % (name, self.quote_lit(opd[1]))
+            # num 字面量
+            if typ not in ("int", "bool"):
+                raise S2CError("数字不能赋给 %s 变量 %r" % (typ, name))
+            return "var %s %s=%s" % (typ, name, opd[1])
+        # bin：a op b → 算术指令写回
+        _, op, L, R = expr
+        if typ != "int":
+            raise S2CError("算术写回目标 %r 应为 int（当前 %s）" % (name, typ))
+        if op not in INT_OPWORD:
+            raise S2CError("不支持的算术运算符 %r" % op)
+        lt = self.opnd_text(L)
+        rt = self.opnd_text(R)
+        if lt is None or rt is None:
+            raise S2CError("算术操作数不支持（%r %r）" % (L, R))
+        self.vtypes[name] = "int"
+        return "%s %s %s %s" % (INT_OPWORD[op], lt, rt, name)
+
+    def opnd_text(self, opd):
+        k, v = opd[0], opd[1]
+        if k in ("num", "id", "str"):
+            if v.startswith("-"):
+                raise S2CError("算术中请勿内嵌负字面量（如 n = n - 1 中的 -1 应写 n - 1）")
+            return v
+        if k == "bool":
+            return "1" if v else "0"
+        return None
+
+    # ---- 条件 → 一组会产生 G_RETURN 的代码行（v0.2 支持表达式降级） ----
     def emit_cond(self, cond, out, vs, exp_stack):
-        if cond[0] == "bool":
+        k = cond[0]
+        if k == "bool":
             out.append(self.emit_call(self.ret_setter, ["1" if cond[1] else "0"]))
             return
-        name, args = cond[1], cond[2]
-        if name in self.fns:
-            self.expand_fn(name, args, out, vs, exp_stack)
+        if k == "call":
+            name, args = cond[1], cond[2]
+            if name in self.fns:
+                self.expand_fn(name, args, out, vs, exp_stack)
+                return
+            if name in RESERVED_CMD:
+                raise S2CError("条件不能调用保留命令 %r" % name)
+            out.append(self.emit_call(name, args))
             return
-        if name in RESERVED_CMD:
-            raise S2CError("条件不能调用保留命令 %r" % name)
-        out.append(self.emit_call(name, args))
+        if k == "var":
+            out.append("btest " + cond[1])     # 变量真值 → G_RETURN
+            return
+        if k == "lit":
+            out.append("btest " + cond[1])     # 字面量真值 → G_RETURN
+            return
+        if k == "not":
+            x = cond[1]
+            if x[0] == "bool":
+                out.append(self.emit_call(self.ret_setter, ["0" if x[1] else "1"]))
+                return
+            tx = self.cond_text(x)
+            if tx is None:
+                raise S2CError("! 目标无法取反（%r）" % (x,))
+            out.append("bnot " + tx)
+            return
+        if k == "cmp":
+            _, op, L, R = cond
+            if op not in CMP_OPWORD:
+                raise S2CError("不支持比较符 %r" % op)
+            lt = self.cond_text(L)
+            rt = self.cond_text(R)
+            if lt is None or rt is None:
+                raise S2CError("比较两侧需为变量/字面量")
+            out.append("%s %s %s" % (CMP_OPWORD[op], lt, rt))
+            return
+        raise S2CError("未知条件节点 %r" % (k,))
+
+    def cond_text(self, x):
+        if x[0] == "var":
+            return x[1]
+        if x[0] == "lit":
+            return x[1]
+        if x[0] == "bool":
+            return "1" if x[1] else "0"
+        return None
 
     # ---- if 转译（线性 label/jump） ----
     def emit_if(self, st, lines, vs, exp_stack):
@@ -649,8 +863,10 @@ class Compiler:
                 name, args = st[1], st[2]
                 out.append(("call", name, [sub.get(a, a) for a in args]))
             elif k == "var":
-                nm, val = st[1], st[2]
-                out.append(("var", nm, sub.get(val, val)))
+                nm, typ, val = st[1], st[2], st[3]
+                out.append(("var", nm, typ, sub.get(val, val)))
+            elif k == "assign":
+                out.append(("assign", st[1], self.clone_expr(st[2], sub)))
             elif k == "free":
                 out.append(st)
             elif k == "ret_set":
@@ -667,20 +883,48 @@ class Compiler:
                 raise S2CError("fn 体内不支持该语句 %r" % (k,))
         return out
 
-    @staticmethod
-    def clone_cond(cond, sub):
+    @classmethod
+    def clone_cond(cls, cond, sub):
         if cond is None:
             return None
-        if cond[0] == "bool":
+        k = cond[0]
+        if k == "bool":
             return cond
-        name, args = cond[1], cond[2]
-        return ("call", name, [sub.get(a, a) for a in args])
+        if k == "call":
+            return ("call", cond[1], [sub.get(a, a) for a in cond[2]])
+        if k == "var":
+            nm = cond[1]
+            return ("lit", sub[nm]) if nm in sub else cond
+        if k == "lit":
+            return cond
+        if k == "not":
+            return ("not", cls.clone_cond(cond[1], sub))
+        if k == "cmp":
+            _, op, L, R = cond
+            return ("cmp", op, cls.clone_cond(L, sub), cls.clone_cond(R, sub))
+        return cond
+
+    @classmethod
+    def clone_expr(cls, expr, sub):
+        if expr[0] == "val":
+            opd = expr[1]
+            if opd[0] == "id" and opd[1] in sub:
+                return ("val", ("id", sub[opd[1]]))
+            return expr
+        op, L, R = expr[1], expr[2], expr[3]
+        return ("bin", op, cls.clone_expr_opd(L, sub), cls.clone_expr_opd(R, sub))
+
+    @staticmethod
+    def clone_expr_opd(opd, sub):
+        if opd[0] == "id" and opd[1] in sub:
+            return ("id", sub[opd[1]])
+        return opd
 
 
 # ============================ 顶层接口 ============================
 
 def translate(source, ret_setter="setret", max_len=512,
-              var_max=2, name_max=8, value_max=15):
+              var_max=4, name_max=8, value_max=15):
     """源码 → (chain, warnings)。抛 S2CError。"""
     toks = tokenize(source)
     parser = Parser(toks)
@@ -708,7 +952,7 @@ def main(argv=None):
                     help="置 G_RETURN 命令名（ret()/true/false 映射到它，默认 setret）")
     ap.add_argument("--max-len", type=int, default=512,
                     help="单条链最大长度告警阈值（默认 512，对齐 SCL_CFG_SCRIPT_MAX）")
-    ap.add_argument("--var-max", type=int, default=2, help="同时存活变量上限（默认 2）")
+    ap.add_argument("--var-max", type=int, default=4, help="同时存活变量上限（默认 4）")
     ap.add_argument("--name-max", type=int, default=8, help="变量名长度上限（默认 8）")
     ap.add_argument("--value-max", type=int, default=15, help="变量字面值长度上限（默认 15）")
     args = ap.parse_args(argv)

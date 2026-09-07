@@ -4,14 +4,13 @@
   * @brief   PC 示例：基础演示命令（可裁剪 SCL_EX_CMDS_EN=0 裁掉）
   *
   *          提供命令（演示 + 测试用，全部同步/异步两类示例）：
-  *            - echo <text...>   同步：打印参数（验证展开/引号）
-  *            - setret <0|1>     同步：显式写 G_RETURN
-  *            - cmp <a> <b>      同步：G_RETURN = (a==b)（if 用）
-  *            - add <a> <b>      同步：打印 a+b（普通式调用演示）
+  *            - echo <text...>   同步：打印参数（验证展开/引号/类型化参数）
+  *            - setret <0|1>     同步：显式写 G_RETURN（S2C ret 糖目标）
   *            - noop             同步：什么都不做（性能/压力用）
   *            - demo_reset [n]   同步：计数清零并设目标（默认 3）
   *            - demo_inc         同步：计数+1 并打印；G_RETURN=(计数<目标)
   *            - wait <n>         异步：模拟耗时操作，n 个 Loop 后完成并置 G_RETURN=真
+  *          （int 运算/比较由库内置指令承担：iadd/isub/.../ieq/ilt 等，见 scl.h）
   ******************************************************************************
   */
 
@@ -52,8 +51,6 @@ static void DemoTalk(const char *fmt, ...)
 
 static void Cmd_echo(int argc, char *argv[]);
 static void Cmd_setret(int argc, char *argv[]);
-static void Cmd_cmp(int argc, char *argv[]);
-static void Cmd_add(int argc, char *argv[]);
 static void Cmd_noop(int argc, char *argv[]);
 static void Cmd_demo_reset(int argc, char *argv[]);
 static void Cmd_demo_inc(int argc, char *argv[]);
@@ -62,8 +59,6 @@ static bool Sync_wait(bool clear);
 
 static scl_cmd_t s_cmd_echo       = { "echo",       Cmd_echo,       NULL, NULL, 0 };
 static scl_cmd_t s_cmd_setret     = { "setret",     Cmd_setret,     NULL, NULL, 0 };
-static scl_cmd_t s_cmd_cmp        = { "cmp",        Cmd_cmp,        NULL, NULL, 0 };
-static scl_cmd_t s_cmd_add        = { "add",        Cmd_add,        NULL, NULL, 0 };
 static scl_cmd_t s_cmd_noop       = { "noop",       Cmd_noop,       NULL, NULL, 0 };
 static scl_cmd_t s_cmd_demo_reset = { "demo_reset", Cmd_demo_reset, NULL, NULL, 0 };
 static scl_cmd_t s_cmd_demo_inc   = { "demo_inc",   Cmd_demo_inc,   NULL, NULL, 0 };
@@ -94,20 +89,6 @@ static void Cmd_setret(int argc, char *argv[])
 {
     (void)argc;
     SCL_Ret_Set((argv[0] != NULL) ? atoi(argv[0]) : 0);
-}
-
-/* cmp：G_RETURN = (a==b) */
-static void Cmd_cmp(int argc, char *argv[])
-{
-    (void)argc;
-    SCL_Ret_Set((atoi(argv[0]) == atoi(argv[1])) ? 1 : 0);
-}
-
-/* add：打印 a+b（普通式调用 add 2 3） */
-static void Cmd_add(int argc, char *argv[])
-{
-    (void)argc;
-    DemoTalk("add=%d\n", atoi(argv[0]) + atoi(argv[1]));
 }
 
 /* noop：什么都不做（同步压力测试） */
@@ -166,8 +147,6 @@ void Scl_Demo_Register(void)
 {
     SCL_RegisterCmd(&s_cmd_echo);
     SCL_RegisterCmd(&s_cmd_setret);
-    SCL_RegisterCmd(&s_cmd_cmp);
-    SCL_RegisterCmd(&s_cmd_add);
     SCL_RegisterCmd(&s_cmd_noop);
     SCL_RegisterCmd(&s_cmd_demo_reset);
     SCL_RegisterCmd(&s_cmd_demo_inc);
