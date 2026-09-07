@@ -227,8 +227,18 @@ def test_feed():
                    "if ((p && q) || !q) { echo(Y) } else { echo(N) }",
          ["echo Y", "RUN-OK"]),
         ("wlogic", "var int n=0\nvar bool run=true\n"
-                    "while (run && n < 2) { n = n + 1; echo(\"n=${n}\") }",
-         ["echo n=1", "echo n=2", "RUN-OK"]),
+                    "while (run && n < 2) { n = n + 1; echo(\"n=${n}\") }\n"
+                    "echo(done)",
+         ["echo n=1", "echo n=2", "echo done", "RUN-OK"]),
+        ("forb", "for (var int i=0; i < 10; i = i + 1) {\n"
+                 "  if (i == 2) { break }\n  echo(\"b${i}\")\n}\necho(over)",
+         ["echo b0", "echo b1", "echo over", "RUN-OK"]),
+        ("forc", "for (var int i=0; i < 5; i = i + 1) {\n"
+                 "  if (i == 1) { continue }\n  echo(\"c${i}\")\n}",
+         ["echo c0", "echo c2", "echo c3", "echo c4", "RUN-OK"]),
+        ("wbrk", "var int n=0\nwhile (true) {\n  n = n + 1\n"
+                 "  if (n >= 3) { break }\n  echo(\"w${n}\")\n}",
+         ["echo w1", "echo w2", "RUN-OK"]),
     ]
     for tag, src, subs in feeds:
         try:

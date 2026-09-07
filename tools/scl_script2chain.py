@@ -266,6 +266,11 @@ class Parser:
             return self.parse_if()
         if kw == "while":
             return self.parse_while()
+        if kw == "for":
+            return self.parse_for()
+        if kw == "break" or kw == "continue":
+            self.next()
+            return (kw,)
         if kw == "fn":
             if not top:
                 raise S2CError("fn 定义仅允许顶层", t.line, t.col)
@@ -564,6 +569,52 @@ class Parser:
         body = self.parse_block()
         return ("while", cond, body)
 
+    # ---- v0.3 for(init; cond; step) ----
+    def parse_for(self):
+        self.next()                       # for
+        if not self.at("(", text="("):
+            t = self.cur()
+            raise S2CError("for 需要 for(init;cond;step){...}", t.line, t.col)
+        self.next()
+        self.skip_nl()
+        init = None
+        if not self.at(";", text=";"):
+            init = self.parse_for_istep("for 初始化")
+        self.expect(text=";", what="';'")
+        self.skip_nl()
+        cond = None
+        if not self.at(";", text=";"):
+            cond = self.parse_cond()
+        self.expect(text=";", what="';'")
+        self.skip_nl()
+        step = None
+        if not self.at(")", text=")"):
+            step = self.parse_for_istep("for 步进")
+        self.expect(text=")", what="')'")
+        body = self.parse_block()
+        return ("for", init, cond, step, body)
+
+    def parse_for_istep(self, what):
+        """for 的 init/step：空 / var 声明 / 赋值 / 命令调用"""
+        t = self.cur()
+        if t.kind == "ID" and t.text == "var":
+            return self.parse_var()
+        if t.kind != "ID":
+            raise S2CError("%s需要 var/赋值/调用" % what, t.line, t.col)
+        if t.text in RESERVED_CMD or t.text in SYNTAX_WORDS:
+            raise S2CError("%s不能为关键字 %r" % (what, t.text), t.line, t.col)
+        kw = t.text
+        self.next()
+        if self.at("=", text="="):
+            self.next()
+            self.skip_nl()
+            return ("assign", kw, self.parse_expr())
+        if self.at("(", text="("):
+            self.next()
+            args = self.parse_args_after_open()
+            return ("call", kw, args)
+        raise S2CError("%s需要赋值或调用（如 i=i+1）" % what, t.line, t.col)
+
     def parse_fndef(self):
         t = self.next()
         name_tok = self.cur()
@@ -659,6 +710,8 @@ class Compiler:
         self._label_seq = 0
         self.vtypes = {}      # v0.2：变量名 → bool/int/flag/string（编译期跟踪）
         self._tmpn = 0        # v0.3：隐藏临时变量序号（__t0..）
+        self._loop = []       # v0.3：循环上下文栈 {break:, continue:}（for/while 的 break/continue）
+        self._loop = []       # v0.3：循环上下文栈 {break:, continue:}（for/while 的 break/continue）
 
     # ---- 标签 / 引号 ----
     def new_label(self):
@@ -726,6 +779,13 @@ class Compiler:
             self.emit_if(st, lines, vs, exp_stack)
         elif k == "while":
             self.emit_while(st, lines, vs, exp_stack)
+        elif k == "for":
+            self.emit_for(st, lines, vs, exp_stack)
+        elif k in ("break", "continue"):
+            if not self._loop:
+                raise S2CError("%s 只能在循环内使用" % k)
+            tag = "break" if k == "break" else "continue"
+            lines.append("jump " + self._loop[-1][tag])
         elif k == "fndef":
             pass   # 定义不输出
         else:
@@ -976,11 +1036,24 @@ class Compiler:
             lines.extend(self.code(elsel, vs, exp_stack))
             lines.append("label " + le)
 
+    @staticmethod
+    def uses_bc(stmts):
+        """当前作用域（body）是否用到 break/continue（嵌套 while/for 内的归内层，不计）"""
+        if not stmts:
+            return False
+        for st in stmts:
+            k = st[0]
+            if k in ("break", "continue"):
+                return True
+            if k == "if":
+                if Compiler.uses_bc(st[2]) or Compiler.uses_bc(st[3]):
+                    return True
+        return False
+
     # ---- while 转译（do-while：body 先跑再判；label+条件 jump） ----
     def emit_while(self, st, lines, vs, exp_stack):
         _, cond, body = st
         lt = self.new_label()
-        bodyl = self.code(body, vs, exp_stack)
         condl = []
         if cond[0] == "bool":
             if cond[1]:
@@ -992,10 +1065,49 @@ class Compiler:
         else:
             self.emit_cond(cond, condl, vs, exp_stack)
 
-        lines.append("label " + lt)
-        lines.extend(bodyl)
-        lines.extend(condl)
-        lines.append("jump -a " + lt)
+        if Compiler.uses_bc(body):
+            # body 含 break/continue：提供 break 标签（continue 指向 lt）
+            lb = self.new_label()
+            lines.append("label " + lt)
+            self._loop.append({"break": lb, "continue": lt})
+            lines.extend(self.code(body, vs, exp_stack))
+            self._loop.pop()
+            lines.extend(condl)
+            lines.append("jump -a " + lt)
+            lines.append("label " + lb)
+        else:
+            lines.append("label " + lt)
+            lines.extend(self.code(body, vs, exp_stack))
+            lines.extend(condl)
+            lines.append("jump -a " + lt)
+
+    # ---- for(init;cond;step) 转译（标准 while 语义：先判再跑） ----
+    def emit_for(self, st, lines, vs, exp_stack):
+        _, init, cond, step, body = st
+        if init is not None:
+            lines.extend(self.code([init], vs, exp_stack))
+        lc = self.new_label()    # cond / 回跳
+        lbb = self.new_label()   # body 真跳
+        ls = self.new_label()    # step（continue 落此）
+        lb = self.new_label()    # break / 退出
+        lines.append("label " + lc)
+        if cond is None:
+            lines.append(self.emit_call(self.ret_setter, ["1"]))
+        else:
+            condl = []
+            self.emit_cond(cond, condl, vs, exp_stack)
+            lines.extend(condl)
+        lines.append("jump -a " + lbb)
+        lines.append("jump " + lb)
+        lines.append("label " + lbb)
+        self._loop.append({"break": lb, "continue": ls})
+        lines.extend(self.code(body, vs, exp_stack))
+        self._loop.pop()
+        lines.append("label " + ls)
+        if step is not None:
+            lines.extend(self.code([step], vs, exp_stack))
+        lines.append("jump " + lc)
+        lines.append("label " + lb)
 
     # ---- 函数内联 ----
     def expand_fn(self, name, args, out, vs, exp_stack):
@@ -1034,6 +1146,15 @@ class Compiler:
             elif k == "while":
                 cond, body = st[1], st[2]
                 out.append(("while", self.clone_cond(cond, sub), self.clone_sub(body, sub)))
+            elif k == "for":
+                init, cond, step, body = st[1], st[2], st[3], st[4]
+                out.append(("for",
+                            self.clone_sub([init], sub)[0] if init is not None else None,
+                            self.clone_cond(cond, sub),
+                            self.clone_sub([step], sub)[0] if step is not None else None,
+                            self.clone_sub(body, sub)))
+            elif k in ("break", "continue"):
+                out.append(st)
             else:
                 raise S2CError("fn 体内不支持该语句 %r" % (k,))
         return out
