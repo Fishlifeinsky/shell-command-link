@@ -16,7 +16,8 @@ scl_script2chain.py — 现代语法脚本 -> SCL 指令链 转译器（纯标�
   - if：     if (条件) { } [else if (条件) { }] [else { }]
              无条件形式： if { } else { }   —— 沿用当前 G_RETURN
              条件 = 命令/自定义 fn 调用（产生 G_RETURN）或 true/false
-  - while：  while (条件) { }       （C 语义：先判后跑）
+  - while：  while (条件) { }       （do-while 语义：body 先跑一次再判）
+             —— 直译 SCL 'while -b; body; 条件; while -e'
   - 函数：   fn 名 (参1,参2) { 语句 }   —— 编译期内联展开（文字替换），可用作条件
 
 输出：单行 SCL 指令链（保留关键字的引号交替由工具自动处理）。
@@ -700,36 +701,31 @@ class Compiler:
             raise S2CError("条件不能调用保留命令 %r" % name)
         return self.emit_call(name, args, depth)
 
-    # ---- while 转译（C 语义：门控 do-while） ----
+    # ---- while 转译（do-while：body 先跑一次再判；直译 SCL while -b/-e） ----
     def emit_while(self, st, depth, vs, exp_stack):
         _, cond, body = st
 
+        # 条件在 body 之后判定（do-while），故不再需要"先判"门控
+        body_text = self.emit_stmts(body, depth, vs, exp_stack)
         if cond[0] == "bool":
             if not cond[1]:
-                return ""   # while(false) 不执行
-            # while(true)：恒真（用置位器每圈维持 true，直到 SCL 兜底上限）
-            self.warnings.append("while(true) 需依赖 SCL_CFG_WHILE_MAX 兜底退出，建议用带条件的 while")
-            ctext = self.emit_call(self.ret_setter, ["1"], depth)
+                # do-while(false)：body 仍执行一次，之后强制退出
+                cond_text = self.emit_call(self.ret_setter, ["0"], depth)
+            else:
+                # do-while(true)：恒真循环，依赖 SCL_CFG_WHILE_MAX 兜底
+                self.warnings.append(
+                    "while(true) 为 do-while 且无终止条件，"
+                    "将依赖 SCL_CFG_WHILE_MAX 兜底(100000 次)强制退出")
+                cond_text = self.emit_call(self.ret_setter, ["1"], depth)
         else:
-            ctext = self.emit_cond(cond, depth, vs, exp_stack)
+            cond_text = self.emit_cond(cond, depth, vs, exp_stack)
 
-        # 门控 do-while：cond; if -t "while -b; body; cond; while -e"
-        body_text = self.emit_stmts(body, depth + 1, vs, exp_stack)
-        inner_cond = self.emit_cond(cond, depth + 1, vs, exp_stack) \
-            if cond[0] != "bool" else self.emit_call(self.ret_setter, ["1"], depth + 1)
-
-        loop = "while -b"
+        parts = ["while -b"]
         if body_text:
-            loop += ";" + body_text
-        loop += ";" + inner_cond + ";while -e"
-
-        # 恒真时无需门控
-        if cond[0] == "bool" and cond[1]:
-            return loop
-
-        # 门控：cond 先判，真才进循环
-        q = '"' if (depth % 2 == 0) else "'"
-        return ";".join([ctext, "if -t " + self.wrap_q(loop, depth)])
+            parts.append(body_text)
+        parts.append(cond_text)
+        parts.append("while -e")
+        return ";".join(parts)
 
 
 # ============================ 顶层接口 ============================

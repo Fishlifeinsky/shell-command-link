@@ -75,9 +75,9 @@ python tools/s2c_test.py                                      # 转译器测试(
 # 注释支持 # // /* */
 var sp = 100                       # 变量（上限 2/名≤8/值≤15）
 fn not_done() { demo_inc() }       # 用户函数：作 if/while 条件（内联）
-cmp(1, ${sp})                      # 命令产生 G_RETURN
-if { echo("ok") } else { echo("ng") }          # 无条件 if（沿用 G_RETURN）
-while (not_done()) { echo("step", ${sp}) }     # C 语义 while
+if (cmp(1, ${sp})) { echo("eq") } else { echo("ne") }   # if(cond) 为主
+if { echo("ok") }                  # 无条件 if（沿用当前 G_RETURN）也可用
+while (not_done()) { echo("step", ${sp}) }     # do-while：body 先跑一次再判
 ret(1)                             # 置 G_RETURN（默认映射 setret，可配）
 ```
 

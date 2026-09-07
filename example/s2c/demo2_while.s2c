@@ -1,4 +1,7 @@
-# 演示2：C 语义 while + 用户函数作条件（fn 每圈返回判断值）
+# 演示2：do-while 语义 while + 用户函数作条件（fn 每圈返回判断值）
+#
+# 语义：while(cond){body} 为 do-while —— body 先跑一次，之后每圈先跑 body
+#       再判 cond；cond 为真继续、为假退出。直译 SCL: while -b;body;cond;while -e
 #
 # demo_reset(3) : 演示计数器清零并设目标 3
 # demo_inc()    : 计数+1；未达目标则置 G_RETURN=true（作为循环继续条件）

@@ -61,13 +61,12 @@ def test_unit():
         'var sp=100;cmp 1 ${sp};if -t "echo ${sp} ok" -f "echo ${sp} ng"',
         "if/else 无条件 + 变量/字符串参数")
 
-    # while(cond)（C 语义）+ fn 作条件
+    # while(cond)（do-while 语义）+ fn 作条件（body 先跑一次再判，无门控）
     unit_exact(
         "var sp=100\nfn not_done() {\n demo_inc()\n}\n"
         "demo_reset(3)\nwhile (not_done()) {\n echo(${sp})\n}",
-        'var sp=100;demo_reset 3;demo_inc;'
-        'if -t "while -b;echo ${sp};demo_inc;while -e"',
-        "while(用户fn) 门控 do-while")
+        'var sp=100;demo_reset 3;while -b;echo ${sp};demo_inc;while -e',
+        "while(用户fn) do-while（直译 while -b/-e）")
 
     # ret 糖衣 + if(命令) + 分支内引号嵌套 + 多语句 ';'
     unit_exact(
@@ -75,10 +74,10 @@ def test_unit():
         'setret 1;cmp 2 2;if -t "echo \'a b\' x" -f "echo c";setret 0',
         "ret/false 糖衣 + if(命令) + 嵌套引号自动交替")
 
-    # while(false) 编译为空（不执行）
+    # while(false)：do-while 语义下 body 仍执行一次，再强制退出
     unit_exact("while (false) { echo(x) }\necho(ok)",
-               "echo ok",
-               "while(false) 编译为空")
+               "while -b;echo x;setret 0;while -e;echo ok",
+               "while(false) do-while：body 执行一次")
 
     # 多行实参 + 引号字符串
     unit_exact('note("line1",\n     "line2")',
@@ -182,16 +181,27 @@ def test_backfeed():
             print("       " + out.replace("\n", " / ")[:400])
 
     # 3.2 单元里的两条代表性链也真实跑
-    chain2 = ('var sp=100;demo_reset 3;demo_inc;'
-              'if -t "while -b;echo ${sp};demo_inc;while -e"')
+    chain2 = ('var sp=100;demo_reset 3;while -b;echo ${sp};demo_inc;while -e')
     ok, out = run_chain(chain2, "unit2")
-    check(ok, "回喂 while(fn) 单元链")
+    check(ok, "回喂 while(fn) 单元链(do-while)")
     if not ok:
         print("       " + out.replace("\n", " / ")[:400])
 
     chain3 = 'setret 1;cmp 2 2;if -t "echo \'a b\' x" -f "echo c";setret 0'
     ok, out = run_chain(chain3, "unit3")
     check(ok, "回喂 ret/if(嵌套引号) 单元链")
+    if not ok:
+        print("       " + out.replace("\n", " / ")[:400])
+
+    # 3.3 do-while 体内嵌 if（do-while 语义 + 引号交替 + 终止性）
+    src = ("fn c() { demo_inc() }\n"
+           "demo_reset(2)\n"
+           "while (c()) {\n    if (cmp(1,1)) { echo(\"x\") }\n}\n"
+           "echo(\"end\")")
+    chain, _ = translate(src)
+    ok, out = run_chain(chain, "nest")
+    check(ok and out.count("echo x") == 2,
+          "回喂 do-while 内嵌 if（body×2 + RUN-OK）")
     if not ok:
         print("       " + out.replace("\n", " / ")[:400])
 

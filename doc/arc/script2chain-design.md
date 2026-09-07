@@ -19,14 +19,14 @@ fn not_done() {       # 用户自定义"判定函数"：每圈执行并置 G_RET
     demo_inc()
 }
 
-while (not_done()) {  # C 语义 while：先判后跑
+while (not_done()) {  # do-while：body 先跑一次再判（直译 SCL）
     echo("step", ${sp})
 }
 ```
 
-转译结果（示意，普通式）：
+转译结果（示意，普通式 do-while）：
 ```
-var sp=100;demo_reset 3;demo_inc;if -t "while -b;echo step ${sp};demo_inc;while -e";echo loop-end
+var sp=100;demo_reset 3;while -b;echo step ${sp};demo_inc;while -e;echo loop-end
 ```
 
 ## 2. 约束与映射原则
@@ -38,15 +38,16 @@ SCL 控制流只有 `G_RETURN`（命令写入、`if`/`while -e` 读取即清零�
 |----------|------|------|
 | `if (fn(...)) {A} else {B}` | 先跑条件链，G_RETURN 真→A、假→B | `<cond>; if -t "A" -f "B"` |
 | `if {A} else {B}`（无条件） | 沿用**当前** G_RETURN | `if -t "A" -f "B"` |
-| `while (fn(...)) {B}` | C 语义（先判后跑） | `<c0>; if -t "while -b;B;<c1>;while -e"` |
+| `while (fn(...)) {B}` | **do-while**（body 先跑一次再判） | `while -b;B;<c1>;while -e` |
 | `ret(1)` / `true` / `false` | 置 G_RETURN（映射到目标命令） | `<ret_setter> 1/0` |
 
 - 输出命令统一为 SCL **普通式**：`cmd a b`；含空格的参数自动加引号。括号只在 modern 源语法里出现，转译时被剥掉。
-- `while(cond)` 降级为"门控 do-while"：先判（gate），真才进 do-while；每圈 body 后重判，
-  `-e` 读到 false 退出 → 与 C `while(cond){body}` 等价。
+- `while(cond){body}` 现为 **do-while 语义**（用户 2026-09-07 确认）：body 先跑一次，之后每圈先跑 body 再判 cond，
+  cond 为真继续、为假退出 → 直译 `while -b; body; cond; while -e`，**无"先判"门控**。
+  `while(false)` 仍会执行一次 body；`while(true)` 依赖 `SCL_CFG_WHILE_MAX` 兜底退出（转译时给警告）。
 - 用户自定义 `fn name(args){...}`：**编译期内联展开**（textual inline），调用点替换为函数体，
   参数按字面替换。原因：SCL 无运行时函数/调用栈且占用低。fn 体可作为条件（末句置 G_RETURN）。
-- `if {}`（无参）用于"上一条命令刚写完 G_RETURN，立即据此分支"的常见电机测法。
+- `if (cond)` 为主；`if {}`（无参）仍支持，用于"上一条命令刚写完 G_RETURN，立即据此分支"的常见电机测法。
 
 ## 3. 引号处理（关键）
 
