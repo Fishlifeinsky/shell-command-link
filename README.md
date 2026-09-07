@@ -21,6 +21,9 @@
   可 `SCL_CFG_RUN_TEXT_EN=0` 裁掉动态编译器（固定脚本最省 RAM 用法）
 - **交互 Shell**（example/scl_shell）：串口 REPL —— 行编辑/历史 ↑↓/Tab 补全
   命令与 `${var}`；`SCL_VarKeep(1)` 会话变量跨命令保留
+- **环境变量缓冲（持久配置）**：默认配置表装载 → 脚本 `${}`/命令/运算只读可见；
+  `Scl_Env_Set` 修改；`Scl_Env_Save/Load` 序列化固化到用户自有存储(EEPROM/Flash/文件)
+  与恢复；坏存储自动回退默认（`SCL_CFG_ENV_MAX` 可裁剪）
 - **MCU 串口模拟**（example/sim_uart）：把 PC 终端当串口体验/调试
 - **脚本结束自动全释放**（默认）；置 `SCL_VarKeep(1)` 后保留为会话变量
 - **汇编式控制流**：`label 名` 设跳转点；`jump [-a] 名`（-a=G_RETURN 真跳）
@@ -38,6 +41,7 @@
 | `doc/arc/script2chain-design.md` | 现代脚本→指令链 转译器设计（语法与映射） |
 | `doc/arc/scl-const-prog.md` | **v0.3**：预编译只读程序（s2c→C，省 RAM）设计 |
 | `doc/arc/scl-shell-sim.md` | **v0.3**：交互 Shell + MCU 串口模拟 + VarKeep |
+| `doc/arc/scl-env-buffer.md` | **v0.3**：环境变量缓冲（默认装载/固化/恢复） |
 | `doc/other/scl-config-profiles.md` | **v0.3**：配置裁剪档模板（min/平衡/full + 内存预算） |
 | `doc/spec/scl-spec.md` | 语法/API/移植/裁剪规格 + 集成示例 |
 | `doc/other/scl-test-report.md` | 全量测试报告（大小/速度/可靠性/重复性/复杂度） |

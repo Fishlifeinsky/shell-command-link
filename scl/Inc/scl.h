@@ -277,6 +277,68 @@ const scl_cmd_t *SCL_CmdHead(void);
   */
 int SCL_VarEnum(int idx, char *name, int cap);
 
+#if (SCL_CFG_ENV_EN != 0u)
+
+/* ============================ 环境变量缓冲（持久配置） ============================ */
+
+/**
+  * @brief  默认配置项（用户 const 表；name 需同变量名规则）
+  * @note   val 为规范文本：bool→true/false；int→十进制(可 0x/0b)；flag→"-x"；string→原文
+  */
+typedef struct scl_env_def
+{
+    const char *name;
+    uint8_t     type;   /* SCL_T_BOOL/INT/FLAG/STR */
+    const char *val;
+} scl_env_def_t;
+
+/**
+  * @brief  注册默认配置表（const，可放 Flash）
+  * @param  tab 默认配置数组；NULL 表示清除注册
+  * @param  n   条数
+  */
+void Scl_Env_RegisterDefault(const scl_env_def_t *tab, int n);
+
+/**
+  * @brief  用默认配置表重建 env 缓冲（先清空再逐条装载）
+  * @retval 装载成功条数；-1=无默认表（已清空）
+  */
+int Scl_Env_Reset(void);
+
+/**
+  * @brief  显式类型写入/覆盖一条 env（值按 type 校验并规范化）
+  * @retval 0=成功；-1=槽满；-2=名非法/过长；-3=值非法/过长；-4=名为空
+  */
+int Scl_Env_Set(const char *name, uint8_t type, const char *val);
+
+/**
+  * @brief  序列化 env 缓冲到字节流（供用户固化到自有存储区）
+  * @param  buf 目标缓冲
+  * @param  cap 容量
+  * @retval 写入字节数；负=空间不足
+  * @note   格式：'S''C''L''E' + ver(1) + n(1) + 每项[type][nlen][name][vlen][val]
+  */
+int Scl_Env_Save(uint8_t *buf, int cap);
+
+/**
+  * @brief  从字节流装载 env 缓冲（用户从自有存储读回后调用）
+  * @param  buf 序列化数据（须 Scl_Env_Save 生成）
+  * @param  len 数据长度
+  * @retval 0=成功；负=格式错/超容
+  */
+int Scl_Env_Load(const uint8_t *buf, int len);
+
+/** @brief 清空 env 缓冲，返回释放条数 */
+int Scl_Env_FreeAll(void);
+
+/** @brief 已用 env 条数 */
+int Scl_Env_Count(void);
+
+/** @brief 按索引遍历 env 名（idx 0 起）。0=找到；-1=结束/非法 */
+int Scl_Env_Enum(int idx, char *name, int cap);
+
+#endif /* SCL_CFG_ENV_EN */
+
 #ifdef __cplusplus
 }
 #endif

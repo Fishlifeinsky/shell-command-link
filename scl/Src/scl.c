@@ -131,6 +131,14 @@ typedef struct
 
 static scl_var_t s_vars[SCL_CFG_VAR_MAX];
 
+#if (SCL_CFG_ENV_EN != 0u)
+/* ---- 环境变量缓冲：持久配置，跨脚本恒在（会话变量优先屏蔽同名 env）。
+     数据由默认配置表/用户存储装载（Scl_Env_Reset/Load），可序列化导出固化 ---- */
+static scl_var_t s_env[SCL_CFG_ENV_MAX];
+static const scl_env_def_t *s_env_def = NULL;   /* 用户默认配置表（const，可放 Flash） */
+static uint16_t            s_env_def_n = 0u;
+#endif
+
 /* ---- 当前执行程序：bc/argc 只读访问（可指向 RAM 动态编译产物，或 Flash const 预编译程序）。
      SCL_Run 动态路径把 s_bc/s_argc 挂到 s_prog；SCL_RunProg 直接挂 const 程序 */
 static scl_prog_t s_prog;                 /* 激活程序；bc==NULL 表示未装载 */
@@ -541,6 +549,30 @@ static int Scl_VarFind(const char *name)
     return -1;
 }
 
+/* 读路径查找：先会话变量、后环境变量（ENV_EN）。返回表项指针或 NULL。
+   会话变量优先，因此脚本 'var' 可临时屏蔽同名 env；写路径仍只走会话 Scl_VarFind */
+static scl_var_t *Scl_VarFindAny(const char *name)
+{
+    int i;
+    for (i = 0; i < (int)SCL_CFG_VAR_MAX; i++)
+    {
+        if ((s_vars[i].used != 0u) && Scl_StrEq(s_vars[i].name, name))
+        {
+            return &s_vars[i];
+        }
+    }
+#if (SCL_CFG_ENV_EN != 0u)
+    for (i = 0; i < (int)SCL_CFG_ENV_MAX; i++)
+    {
+        if ((s_env[i].used != 0u) && Scl_StrEq(s_env[i].name, name))
+        {
+            return &s_env[i];
+        }
+    }
+#endif
+    return NULL;
+}
+
 static int Scl_VarNameOk(const char *name)
 {
     uint16_t n = 0u;
@@ -690,14 +722,14 @@ int SCL_VarSetT(const char *name, uint8_t type, const char *val)
 
 uint8_t SCL_VarType(const char *name)
 {
-    int idx = Scl_VarFind(name);
-    return (idx < 0) ? 0u : s_vars[idx].type;
+    scl_var_t *e = Scl_VarFindAny(name);
+    return (e == NULL) ? 0u : e->type;
 }
 
 const char *SCL_VarGet(const char *name)
 {
-    int idx = Scl_VarFind(name);
-    return (idx < 0) ? NULL : s_vars[idx].value;
+    scl_var_t *e = Scl_VarFindAny(name);
+    return (e == NULL) ? NULL : e->value;
 }
 
 int SCL_VarFree(const char *name)
@@ -788,34 +820,287 @@ int SCL_VarEnum(int idx, char *name, int cap)
     return -1;
 }
 
+#if (SCL_CFG_ENV_EN != 0u)
+/* ========================== 环境变量缓冲（持久配置） ========================== */
+
+static int Scl_EnvFind(const char *name)
+{
+    int i;
+    for (i = 0; i < (int)SCL_CFG_ENV_MAX; i++)
+    {
+        if ((s_env[i].used != 0u) && Scl_StrEq(s_env[i].name, name))
+        {
+            return i;
+        }
+    }
+    return -1;
+}
+
+/* 类型化写入一条 env（校验+规范化；覆盖已有；槽满/名错/值错返回负） */
+static int Scl_EnvSetCore(const char *name, uint8_t type, const char *val)
+{
+    char norm[SCL_CFG_VAR_VALUE_MAX];
+    int  idx;
+    int  r;
+    uint16_t i;
+
+    if ((name == NULL) || (name[0] == '\0'))
+    {
+        return -4;
+    }
+    if (!Scl_VarNameOk(name))
+    {
+        return -2;
+    }
+    r = Scl_VarNorm(type, val, norm, (uint16_t)sizeof(norm));
+    if (r != 0)
+    {
+        return -3;
+    }
+    idx = Scl_EnvFind(name);
+    if (idx < 0)
+    {
+        for (idx = 0; idx < (int)SCL_CFG_ENV_MAX; idx++)
+        {
+            if (s_env[idx].used == 0u)
+            {
+                break;
+            }
+        }
+        if (idx >= (int)SCL_CFG_ENV_MAX)
+        {
+            return -1;
+        }
+        s_env[idx].used = 1u;
+        for (i = 0u; name[i] != '\0'; i++)
+        {
+            s_env[idx].name[i] = name[i];
+        }
+        s_env[idx].name[i] = '\0';
+    }
+    s_env[idx].type = type;
+    for (i = 0u; norm[i] != '\0'; i++)
+    {
+        s_env[idx].value[i] = norm[i];
+    }
+    s_env[idx].value[i] = '\0';
+    return 0;
+}
+
+void Scl_Env_RegisterDefault(const scl_env_def_t *tab, int n)
+{
+    s_env_def = tab;
+    s_env_def_n = (uint16_t)((n < 0) ? 0 : n);
+}
+
+int Scl_Env_Reset(void)
+{
+    int i;
+    int ok = 0;
+    Scl_Env_FreeAll();
+    if ((s_env_def == NULL) || (s_env_def_n == 0u))
+    {
+        return -1;
+    }
+    for (i = 0; i < (int)s_env_def_n; i++)
+    {
+        if (Scl_EnvSetCore(s_env_def[i].name, s_env_def[i].type,
+                           s_env_def[i].val) == 0)
+        {
+            ok++;
+        }
+    }
+    return ok;
+}
+
+int Scl_Env_Set(const char *name, uint8_t type, const char *val)
+{
+    return Scl_EnvSetCore(name, type, val);
+}
+
+int Scl_Env_FreeAll(void)
+{
+    int n = 0;
+    int i;
+    for (i = 0; i < (int)SCL_CFG_ENV_MAX; i++)
+    {
+        if (s_env[i].used != 0u)
+        {
+            s_env[i].used = 0u;
+            s_env[i].type = 0u;
+            s_env[i].name[0] = '\0';
+            s_env[i].value[0] = '\0';
+            n++;
+        }
+    }
+    return n;
+}
+
+int Scl_Env_Count(void)
+{
+    int n = 0;
+    int i;
+    for (i = 0; i < (int)SCL_CFG_ENV_MAX; i++)
+    {
+        if (s_env[i].used != 0u)
+        {
+            n++;
+        }
+    }
+    return n;
+}
+
+int Scl_Env_Enum(int idx, char *name, int cap)
+{
+    int n = 0;
+    int i;
+    if ((name == NULL) || (cap <= 0) || (idx < 0))
+    {
+        return -1;
+    }
+    for (i = 0; i < (int)SCL_CFG_ENV_MAX; i++)
+    {
+        if (s_env[i].used != 0u)
+        {
+            if (n == idx)
+            {
+                uint16_t k;
+                uint16_t nl = Scl_StrLen(s_env[i].name);
+                if ((uint16_t)(cap - 1) < nl) { return -1; }
+                for (k = 0u; k < nl; k++) { name[k] = s_env[i].name[k]; }
+                name[nl] = '\0';
+                return 0;
+            }
+            n++;
+        }
+    }
+    return -1;
+}
+
+/* 序列化 env 缓冲：'S''C''L''E' + ver(1) + n(1) + 每项[type][nlen][name][vlen][val]。
+   返回字节数；负=空间不足 */
+int Scl_Env_Save(uint8_t *buf, int cap)
+{
+    int o = 0;
+    int i;
+    if ((buf == NULL) || (cap < 6))
+    {
+        return -1;
+    }
+    buf[o++] = 'S';
+    buf[o++] = 'C';
+    buf[o++] = 'L';
+    buf[o++] = 'E';
+    buf[o++] = 1u;                    /* version */
+    buf[o++] = (uint8_t)Scl_Env_Count();
+    for (i = 0; i < (int)SCL_CFG_ENV_MAX; i++)
+    {
+        uint16_t nl;
+        uint16_t vl;
+        uint16_t k;
+        if (s_env[i].used == 0u) { continue; }
+        nl = Scl_StrLen(s_env[i].name);
+        vl = Scl_StrLen(s_env[i].value);
+        if (o + 2 + (int)nl + 1 + (int)vl > cap) { return -1; }
+        buf[o++] = s_env[i].type;
+        buf[o++] = (uint8_t)nl;
+        for (k = 0u; k < nl; k++) { buf[o++] = (uint8_t)s_env[i].name[k]; }
+        buf[o++] = (uint8_t)vl;
+        for (k = 0u; k < vl; k++) { buf[o++] = (uint8_t)s_env[i].value[k]; }
+    }
+    return o;
+}
+
+/* 反序列化装载 env 缓冲（失败会清空缓冲并返回负） */
+int Scl_Env_Load(const uint8_t *buf, int len)
+{
+    int o = 0;
+    int i;
+    if ((buf == NULL) || (len < 6))
+    {
+        return -1;
+    }
+    if ((buf[0] != 'S') || (buf[1] != 'C') || (buf[2] != 'L') || (buf[3] != 'E'))
+    {
+        return -1;
+    }
+    if (buf[4] != 1u)
+    {
+        return -1;   /* 未知版本 */
+    }
+    {
+        int n = (int)buf[5];
+        if (n > (int)SCL_CFG_ENV_MAX)
+        {
+            return -1;
+        }
+        o = 6;
+        Scl_Env_FreeAll();
+        for (i = 0; i < n; i++)
+        {
+            uint8_t  ty;
+            uint16_t nl;
+            uint16_t vl;
+            char nm[SCL_CFG_VAR_NAME_MAX + 1u];
+            char vl2[SCL_CFG_VAR_VALUE_MAX];
+            uint16_t k;
+            if (o + 2 > len) { Scl_Env_FreeAll(); return -1; }
+            ty = buf[o++];
+            nl = buf[o++];
+            if ((nl > SCL_CFG_VAR_NAME_MAX) || ((o + (int)nl + 1) > len))
+            {
+                Scl_Env_FreeAll();
+                return -1;
+            }
+            for (k = 0u; k < nl; k++) { nm[k] = (char)buf[o++]; }
+            nm[nl] = '\0';
+            vl = buf[o++];
+            if ((vl >= SCL_CFG_VAR_VALUE_MAX) || ((o + (int)vl) > len))
+            {
+                Scl_Env_FreeAll();
+                return -1;
+            }
+            for (k = 0u; k < vl; k++) { vl2[k] = (char)buf[o++]; }
+            vl2[vl] = '\0';
+            if (Scl_EnvSetCore(nm, ty, vl2) != 0)
+            {
+                Scl_Env_FreeAll();
+                return -1;
+            }
+        }
+    }
+    return 0;
+}
+#endif /* SCL_CFG_ENV_EN */
+
 /* 变量数值化（供运算/条件指令）：
    int→值；bool→1/0；flag→已定义即 1；string→整段解析失败按 0（ok=0） */
 static int32_t Scl_VarNum(const char *name, uint8_t *ok)
 {
-    int idx = Scl_VarFind(name);
+    scl_var_t *e = Scl_VarFindAny(name);
     int32_t iv = 0;
-    if (idx < 0)
+    if (e == NULL)
     {
         if (ok != NULL) { *ok = 0u; }
         return 0;
     }
-    switch (s_vars[idx].type)
+    switch (e->type)
     {
     case SCL_T_INT:
-        if (Scl_ParseI32Len(s_vars[idx].value, Scl_StrLen(s_vars[idx].value), &iv) != 0)
+        if (Scl_ParseI32Len(e->value, Scl_StrLen(e->value), &iv) != 0)
         {
             if (ok != NULL) { *ok = 0u; }
             return 0;
         }
         break;
     case SCL_T_BOOL:
-        iv = (Scl_EqIN(s_vars[idx].value, "true", 4u)) ? 1 : 0;
+        iv = (Scl_EqIN(e->value, "true", 4u)) ? 1 : 0;
         break;
     case SCL_T_FLAG:
-        iv = (s_vars[idx].value[0] != '\0') ? 1 : 0;
+        iv = (e->value[0] != '\0') ? 1 : 0;
         break;
     default: /* STR：尝试整段数字 */
-        if (Scl_ParseI32Len(s_vars[idx].value, Scl_StrLen(s_vars[idx].value), &iv) != 0)
+        if (Scl_ParseI32Len(e->value, Scl_StrLen(e->value), &iv) != 0)
         {
             if (ok != NULL) { *ok = 0u; }
             return 0;
@@ -830,25 +1115,25 @@ static int32_t Scl_VarNum(const char *name, uint8_t *ok)
    int→非 0；bool→true；flag→已定义；string→非空且非 false/0 */
 static uint8_t Scl_VarTruth(const char *name)
 {
-    int idx = Scl_VarFind(name);
+    scl_var_t *e = Scl_VarFindAny(name);
     uint8_t len;
-    if (idx < 0)
+    if (e == NULL)
     {
         return 0u;
     }
-    switch (s_vars[idx].type)
+    switch (e->type)
     {
     case SCL_T_INT:
-        return (s_vars[idx].value[0] == '-') ? 1u :
-               ((s_vars[idx].value[0] == '0') && (s_vars[idx].value[1] == '\0')) ? 0u : 1u;
+        return (e->value[0] == '-') ? 1u :
+               ((e->value[0] == '0') && (e->value[1] == '\0')) ? 0u : 1u;
     case SCL_T_BOOL:
-        return (Scl_EqIN(s_vars[idx].value, "true", 4u)) ? 1u : 0u;
+        return (Scl_EqIN(e->value, "true", 4u)) ? 1u : 0u;
     case SCL_T_FLAG:
-        return (s_vars[idx].value[0] != '\0') ? 1u : 0u;
+        return (e->value[0] != '\0') ? 1u : 0u;
     default:
-        len = (uint8_t)Scl_StrLen(s_vars[idx].value);
-        if ((len == 0u) || Scl_EqIN(s_vars[idx].value, "false", 5u) ||
-            ((len == 1u) && (s_vars[idx].value[0] == '0')))
+        len = (uint8_t)Scl_StrLen(e->value);
+        if ((len == 0u) || Scl_EqIN(e->value, "false", 5u) ||
+            ((len == 1u) && (e->value[0] == '0')))
         {
             return 0u;
         }

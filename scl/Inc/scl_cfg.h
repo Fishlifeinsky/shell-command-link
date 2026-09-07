@@ -91,6 +91,24 @@ extern "C" {
 #error "SCL_CFG_RUN_TEXT_EN 与 SCL_CFG_RUN_PROG_EN 至少需一个为 1"
 #endif
 
+/* ============================ 环境变量缓冲（持久配置） ============================ */
+
+/* 环境变量缓冲总开关：1=支持（默认配置表装载/用户存储装载、序列化固化导出）。
+   环境变量在脚本读路径（${}、VarGet、运算/真值操作数）可见（会话变量优先）；
+   0=裁掉该表 */
+#ifndef SCL_CFG_ENV_EN
+#define SCL_CFG_ENV_EN        1u
+#endif
+
+/* env 槽数量（<=255，序列化字段为 1 字节） */
+#ifndef SCL_CFG_ENV_MAX
+#define SCL_CFG_ENV_MAX       8u
+#endif
+
+#if ((SCL_CFG_ENV_EN) != 0u) && ((SCL_CFG_ENV_MAX) > 255u)
+#error "SCL_CFG_ENV_MAX must <= 255"
+#endif
+
 /* ============================ 命令参数 ============================ */
 
 /* 单条命令最大参数个数（argv 数组长度） */

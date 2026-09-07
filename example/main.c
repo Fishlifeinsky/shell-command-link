@@ -598,6 +598,93 @@ static void TestShell(void)
 
 #endif /* SCL_EX_SHELL_EN */
 
+#if (SCL_CFG_ENV_EN == 1u)
+
+/* ---- 8. 环境变量缓冲（默认配置 / 固化 / 恢复 / 脚本可见） ---- */
+
+/* 默认配置表（用户 const，可放 Flash） */
+static const scl_env_def_t s_env_defs[] = {
+    { "ssid", SCL_T_STR,  "SCL-AP" },
+    { "baud", SCL_T_INT,  "115200" },
+    { "dhcp", SCL_T_BOOL, "true"   },
+    { "log",  SCL_T_FLAG, "-v"     },
+};
+
+/* 模拟"用户自己的存储区"（如 EEPROM/文件；此处用内存扇区） */
+static uint8_t s_store[256];
+static int     s_store_len = 0;
+
+static void TestEnv(void)
+{
+    static uint8_t snap[256];
+    int len;
+    int i;
+
+    Section("8. 环境变量缓冲（默认配置/固化/恢复）");
+    Scl_Env_RegisterDefault(s_env_defs, 4);
+    Scl_Env_FreeAll();
+
+    /* 启动 1：无存储 → 从默认配置装载进缓冲 */
+    CHECK(Scl_Env_Reset() == 4, "从默认配置装载 4 条");
+    CHECK(SCL_VarGet("baud") != NULL && strcmp(SCL_VarGet("baud"), "115200") == 0,
+          "env 可经 VarGet 读到（默认值）");
+    CHECK(SCL_VarType("baud") == SCL_T_INT, "env 类型可见(int)");
+
+    /* 脚本 ${} 读取 env；脚本结束 env 仍在（持久跨脚本） */
+    {
+        char buf[96];
+        Scl_CapBegin(buf, sizeof(buf));
+        RunToIdle("echo baud=${baud}");
+        Scl_CapEnd();
+        CHECK(strstr(buf, "echo baud=115200") != NULL, "脚本 ${env} 读取");
+    }
+    CHECK(SCL_VarGet("baud") != NULL && strcmp(SCL_VarGet("baud"), "115200") == 0,
+          "env 跨脚本持久（会话释放不影响）");
+
+    /* 算术指令操作数可直接读 env int */
+    {
+        char buf[96];
+        Scl_CapBegin(buf, sizeof(buf));
+        RunToIdle("var int r=0;iadd r baud r;echo r=${r}");
+        Scl_CapEnd();
+        CHECK(strstr(buf, "echo r=115200") != NULL, "算术指令读 env int 操作数");
+    }
+
+    /* 会话变量优先屏蔽同名 env，会话结束恢复读 env */
+    {
+        char buf[96];
+        Scl_CapBegin(buf, sizeof(buf));
+        RunToIdle("var int baud=0;echo b=${baud}");
+        Scl_CapEnd();
+        CHECK(strstr(buf, "echo b=0") != NULL, "会话变量屏蔽同名 env");
+    }
+    CHECK(strcmp(SCL_VarGet("baud"), "115200") == 0, "会话结束恢复读 env");
+
+    /* 修改 env → 固化到"用户自己的存储区" */
+    CHECK(Scl_Env_Set("baud", SCL_T_INT, "9600") == 0, "env 修改为 9600");
+    CHECK(strcmp(SCL_VarGet("baud"), "9600") == 0, "修改生效");
+    len = Scl_Env_Save(snap, (int)sizeof(snap));
+    CHECK(len > 0, "固化：Save 序列化成功");
+    for (i = 0; i < len; i++) { s_store[i] = snap[i]; }
+    s_store_len = len;
+
+    /* 模拟重启：清空缓冲 → 从用户存储读回写缓冲 */
+    Scl_Env_FreeAll();
+    CHECK(Scl_Env_Count() == 0, "重启清空 env");
+    CHECK(Scl_Env_Load(s_store, s_store_len) == 0, "从用户存储装载(Load)");
+    CHECK(Scl_Env_Count() == 4, "Load 恢复 4 条");
+    CHECK(strcmp(SCL_VarGet("baud"), "9600") == 0, "存储值优先于默认（固化 9600）");
+    CHECK(strcmp(SCL_VarGet("ssid"), "SCL-AP") == 0, "未改项保持默认");
+
+    /* 坏存储 → 拒绝并回退默认 */
+    Scl_Env_FreeAll();
+    CHECK(Scl_Env_Load(s_store, 3) == -1, "坏存储被拒绝");
+    CHECK(Scl_Env_Count() == 0, "坏存储后缓冲为空");
+    CHECK(Scl_Env_Reset() == 4, "无存储时回退默认装载");
+}
+
+#endif /* SCL_CFG_ENV_EN */
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -620,6 +707,9 @@ int main(void)
     TestMisc();
 #if (SCL_EX_SHELL_EN == 1u)
     TestShell();
+#endif
+#if (SCL_CFG_ENV_EN == 1u)
+    TestEnv();
 #endif
 
     printf("\n===== 汇总 =====\n");
