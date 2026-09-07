@@ -553,6 +553,9 @@ class Parser:
         if t.kind == "NUM":
             self.next()
             return ("lit", t.text)
+        if t.kind == "STR":
+            self.next()
+            return ("str", t.text)
         if t.text == "-":
             self.next()
             u = self.cur()
@@ -961,6 +964,16 @@ class Compiler:
             _, op, L, R = cond
             if op not in CMP_OPWORD:
                 raise S2CError("不支持比较符 %r" % op)
+            # v0.3：字符串/flag 类型 → seq/sneq 文本比较
+            if self._is_str(L) or self._is_str(R):
+                if op not in ("==", "!="):
+                    raise S2CError("字符串/flag 仅支持 == / != 比较")
+                if not (self._is_str(L) and self._is_str(R)):
+                    raise S2CError("字符串/flag 与数值不能直接比较")
+                lt = self._str_text(L)
+                rt = self._str_text(R)
+                out.append(("seq" if op == "==" else "sneq") + " " + lt + " " + rt)
+                return
             old = self._tmp_stack
             self._tmp_stack = []
             lt = self._cond_val(L, out, vs)
@@ -1017,6 +1030,21 @@ class Compiler:
             out.append("label " + l2)
             return
         raise S2CError("未知条件节点 %r" % (k,))
+
+    def _is_str(self, n):
+        """节点是否为字符串语境：引号字面量，或 string/flag 类型变量"""
+        if n[0] == "str":
+            return True
+        if n[0] == "var":
+            return self.vtypes.get(n[1]) in ("string", "flag")
+        return False
+
+    def _str_text(self, n):
+        if n[0] == "str":
+            return self.quote_lit(n[1])   # 含空格需引号
+        if n[0] == "var":
+            return "${" + n[1] + "}"      # 运行时按变量文本展开
+        raise S2CError("字符串比较操作数不支持 %r" % (n,))
 
     def cond_text(self, x):
         if x[0] == "var":
@@ -1217,6 +1245,9 @@ class Compiler:
             return ("lit", sub[nm]) if nm in sub else cond
         if k == "lit":
             return cond
+        if k == "str":
+            s = cond[1]
+            return ("str", sub[s]) if s in sub else cond
         if k == "not":
             return ("not", cls.clone_cond(cond[1], sub))
         if k in ("and", "or"):

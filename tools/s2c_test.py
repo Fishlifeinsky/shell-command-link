@@ -124,6 +124,10 @@ def test_unit():
                "var int i=3;iand i 1 __t0;ieq __t0 1;free __t0;"
                "jump -a L1;echo even;jump L2;label L1;echo odd;label L2",
                "if((i&1)==1) 位判断 → iand+ieq 临时")
+    # v0.3：字符串/flag 状态比较 → seq（运行时按 ${} 展开比较）
+    unit_exact('var string st="idle"\nif (st == "ok") { echo(Y) } else { echo(N) }',
+               'var string st=idle;seq ${st} ok;jump -a L1;echo N;jump L2;label L1;echo Y;label L2',
+               "string 状态 == → seq")
 
 
 def unit_err(src, keyword, msg):
@@ -250,6 +254,11 @@ def test_feed():
         ("condbit", "var int r=0xF0\nif ((r & 0x0F) == 0x00) { echo(lo) } else { echo(hi) }\n"
                      "var int a=5\nvar int b=2\nif ((a + b) > 6) { echo(big) }",
          ["echo lo", "echo big", "RUN-OK"]),
+        ("strst", "var string st=\"idle\"\nif (st == \"ok\") { echo(Y) } else { echo(N) }\n"
+                  "st = \"ok\"\nif (st == \"ok\") { echo(now) }",
+         ["echo N", "echo now", "RUN-OK"]),
+        ("flagst", "var flag f=-x\nif (f == \"-x\") { echo(has) } else { echo(no) }",
+         ["echo has", "RUN-OK"]),
     ]
     for tag, src, subs in feeds:
         try:

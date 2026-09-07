@@ -94,6 +94,8 @@ enum
     SCL_OP_INOT = 0x0023u,  /* inot a dst   : ~a     → dst */
     SCL_OP_SHL  = 0x0024u,  /* shl  a b dst : a << b → dst */
     SCL_OP_SHR  = 0x0025u,  /* shr  a b dst : a >> b → dst */
+    SCL_OP_SEQ  = 0x0026u,  /* seq  a b   : G_RETURN = (文本 a==b) */
+    SCL_OP_SNEQ = 0x0027u,  /* sneq a b   : G_RETURN = (文本 a!=b) */
 
     SCL_OP_CMD_BASE = 0x0100u  /* 注册命令 opcode 起点（自动递增） */
 };
@@ -1254,7 +1256,8 @@ static const scl_opword_t s_opwords[] =
     { "bnot", 4u,  SCL_OP_BNOT  }, { "btest",5u,  SCL_OP_BTEST },
     { "iand", 4u,  SCL_OP_IAND  }, { "ior",  3u,  SCL_OP_IOR   },
     { "ixor", 4u,  SCL_OP_IXOR  }, { "inot", 4u,  SCL_OP_INOT  },
-    { "shl",  3u,  SCL_OP_SHL   }, { "shr",  3u,  SCL_OP_SHR   }
+    { "shl",  3u,  SCL_OP_SHL   }, { "shr",  3u,  SCL_OP_SHR   },
+    { "seq",  3u,  SCL_OP_SEQ   }, { "sneq", 4u,  SCL_OP_SNEQ  }
 };
 
 /* 按名字查内置运算指令 opcode；不是返回 0 */
@@ -1610,7 +1613,8 @@ static void Scl_DoHelp(void)
 {
     scl_cmd_t *node;
     Scl_Msg("scl: 内置元命令: var / free / help / label / jump\r\n");
-    Scl_Msg("scl: 内置运算: iadd isub imul idiv imod ineg | ieq ine igt ige ilt ile | band bor bnot btest\r\n");
+    Scl_Msg("scl: 内置运算: iadd isub imul idiv imod ineg | ieq ine igt ige ilt ile\r\n");
+    Scl_Msg("scl:            band bor bnot btest | iand ior ixor inot shl shr | seq sneq\r\n");
     Scl_Msg("scl: var <type> <name>=<value>, type = bool/int/flag/string\r\n");
     Scl_Msg("scl: 已注册命令:\r\n");
     for (node = s_cmd_head; node != NULL; node = node->next)
@@ -1933,6 +1937,19 @@ static void Scl_DoCmp(uint16_t opc, int argc, char *argv[])
     SCL_Ret_Set(r ? 1 : 0);
 }
 
+/* 字符串相等/不等（结果 → G_RETURN）：seq / sneq a b（文本比较，参数可含空格引号） */
+static void Scl_DoStrCmp(uint16_t opc, int argc, char *argv[])
+{
+    int eq;
+    if (argc < 2)
+    {
+        Scl_MsgErr("%s: 需要 2 参 (a b)", (opc == SCL_OP_SEQ) ? "seq" : "sneq");
+        return;
+    }
+    eq = Scl_StrEq(argv[0], argv[1]) ? 1 : 0;
+    SCL_Ret_Set((opc == SCL_OP_SEQ) ? eq : (eq ? 0 : 1));
+}
+
 /* bool 逻辑（结果 → G_RETURN）：band/bor a b；bnot/btest a */
 static void Scl_DoBool(uint16_t opc, int argc, char *argv[])
 {
@@ -2033,6 +2050,14 @@ static void Scl_StepOnce(void)
         return;
 
     default:
+        if ((opc == SCL_OP_SEQ) || (opc == SCL_OP_SNEQ))
+        {
+            int argc = Scl_ArgRestore(aoff);
+            if (argc < 0) { Scl_MsgErr("字符串比较参数错误(%d)", argc); }
+            else { Scl_DoStrCmp(opc, argc, s_argv); }
+            s_pc = next;
+            return;
+        }
         if (((opc >= SCL_OP_IADD) && (opc <= SCL_OP_BTEST)) ||
             ((opc >= SCL_OP_IAND) && (opc <= SCL_OP_SHR)))
         {
