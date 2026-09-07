@@ -4,10 +4,10 @@
   * @brief   PC 示例：基础演示命令（可裁剪 SCL_EX_CMDS_EN=0 裁掉）
   *
   *          提供命令（演示 + 测试用，全部同步/异步两类示例）：
-  *            - echo <text...>   同步：打印参数（验证展开/函数式/引号）
+  *            - echo <text...>   同步：打印参数（验证展开/引号）
   *            - setret <0|1>     同步：显式写 G_RETURN
   *            - cmp <a> <b>      同步：G_RETURN = (a==b)（if 用）
-  *            - add <a> <b>      同步：打印 a+b（函数式 add(a,b) 用）
+  *            - add <a> <b>      同步：打印 a+b（普通式调用演示）
   *            - noop             同步：什么都不做（性能/压力用）
   *            - demo_reset [n]   同步：计数清零并设目标（默认 3）
   *            - demo_inc         同步：计数+1 并打印；G_RETURN=(计数<目标)
@@ -103,7 +103,7 @@ static void Cmd_cmp(int argc, char *argv[])
     SCL_Ret_Set((atoi(argv[0]) == atoi(argv[1])) ? 1 : 0);
 }
 
-/* add：打印 a+b（支持 add(2,3) 函数式） */
+/* add：打印 a+b（普通式调用 add 2 3） */
 static void Cmd_add(int argc, char *argv[])
 {
     (void)argc;

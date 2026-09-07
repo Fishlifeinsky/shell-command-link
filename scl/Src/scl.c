@@ -22,7 +22,7 @@
   *            - while：'while -b; <body>; while -e [N]'
   *                -e 读到 G_RETURN==false 退出；==true 回跳 body（do-while）；
   *                N=显式迭代上限；SCL_CFG_WHILE_MAX 兜底防死循环
-  *            - 命令调用：普通式 'cmd a b'；函数式 'cmd_xxx(a,b,...)'（'(' 紧邻命令名）
+  *            - 命令调用：普通式 'cmd a b'（空白分隔，支持引号参数与 ${} 展开）
   *
   *          保留关键字：if / while / var / free / help（不能注册为业务命令）
   *
@@ -608,14 +608,14 @@ static int Scl_TakeQuoted(const char **pp, const char *bnd,
     return 0;   /* 未闭合 */
 }
 
-/* 子句首 token 长度：到空白 / '(' / 终点停止 */
+/* 子句首 token（命令名/关键字）长度：到空白或终点停止 */
 static uint16_t Scl_HeadLen(const char *cs, const char *ce)
 {
     const char *p = cs;
     while (p < ce)
     {
         char c = *p;
-        if ((c == '(') || Scl_IsSp(c))
+        if (Scl_IsSp(c))
         {
             break;
         }
@@ -785,7 +785,7 @@ static int Scl_ArgAdd(const char *b, const char *e, int ai)
     return 0;
 }
 
-/* 普通式实参解析：'cmd a b ...'（空白分隔，支持 " 与 ' 引号字符串） */
+/* 实参解析：'cmd a b ...'（空白分隔，支持 " 与 ' 引号字符串；函数式调用已移除） */
 static int Scl_ArgsNorm(const char *cs, const char *ce, int *out_argc)
 {
     const char *p = cs + Scl_HeadLen(cs, ce);
@@ -818,78 +818,6 @@ static int Scl_ArgsNorm(const char *cs, const char *ce, int *out_argc)
             ab = p;
             while ((p < ce) && !Scl_IsSp(*p)) { p++; }
             ae = p;
-        }
-        r = Scl_ArgAdd(ab, ae, ai);
-        if (r < 0)
-        {
-            return r;
-        }
-        ai++;
-    }
-    *out_argc = ai;
-    return 0;
-}
-
-/* 函数式实参解析：'cmd_xxx(a,b,...)'，逗号分隔（引号栈保护） */
-static int Scl_ArgsFunc(const char *cs, const char *ce, int *out_argc)
-{
-    const char *p = cs + Scl_HeadLen(cs, ce);  /* p 指向 '(' */
-    const char *cl;                            /* 匹配 ')' */
-    const char *cur;
-    scl_qs_t qs;
-    int ai = 0;
-
-    if ((p >= ce) || (*p != '('))
-    {
-        return -5;
-    }
-    p++;
-    /* 找匹配 ')'（引号栈保护；不支持括号嵌套） */
-    cl = p;
-    Scl_QS_Init(&qs);
-    while (cl < ce)
-    {
-        Scl_QS_Char(&qs, *cl);
-        if ((*cl == ')') && (!Scl_QS_Open(&qs))) { break; }
-        cl++;
-    }
-    if (cl >= ce)
-    {
-        return -4;   /* 缺 ')' */
-    }
-    /* ')' 后应只有空白 */
-    {
-        const char *tail = Scl_SkipSp(cl + 1, ce);
-        if (tail < ce)
-        {
-            return -5;   /* ')' 后仍有内容 */
-        }
-    }
-
-    cur = p;
-    while (cur < cl)
-    {
-        const char *ab;
-        const char *ae;
-        int r;
-
-        cur = Scl_SkipSp(cur, cl);
-        if (cur >= cl)
-        {
-            break;   /* 空参数段忽略 */
-        }
-        ab = cur;
-        Scl_QS_Init(&qs);
-        while (cur < cl)
-        {
-            Scl_QS_Char(&qs, *cur);
-            if ((*cur == ',') && (!Scl_QS_Open(&qs))) { break; }
-            cur++;
-        }
-        ae = cur;
-        if (cur < cl)
-        {
-            cur++;   /* 跳过 ',' */
         }
         r = Scl_ArgAdd(ab, ae, ai);
         if (r < 0)
@@ -1412,25 +1340,16 @@ static void Scl_DoWhile(const char *cs, const char *ce, const char *nx)
 
 /* ========================== 业务命令分发 ========================== */
 
-/* 校验帧类型合法性：帧顶 WHILE 且 s_cur 到帧的 -e（防御）—— 用于步进调度 */
+/* 解析实参（普通式）并调用业务命令 */
 static void Scl_DispatchCmd(const char *cs, const char *ce, const char *nx)
 {
     uint16_t hl = Scl_HeadLen(cs, ce);
-    const char *after = cs + hl;
-    int is_func = ((after < ce) && (*after == '(')) ? 1 : 0;
     int argc = 0;
     int r;
     scl_cmd_t *nd;
 
-    /* 解析实参 */
-    if (is_func != 0)
-    {
-        r = Scl_ArgsFunc(cs, ce, &argc);
-    }
-    else
-    {
-        r = Scl_ArgsNorm(cs, ce, &argc);
-    }
+    /* 解析实参（普通式：空白分隔） */
+    r = Scl_ArgsNorm(cs, ce, &argc);
     if (r < 0)
     {
         Scl_MsgErr("命令参数错误(%d)", r);

@@ -10,7 +10,7 @@
   *              'free' 释放；脚本运行结束自动释放全部变量
   *            - 条件标志 G_RETURN：默认 false，被 if / while -e 读取后自动清零；
   *              C 命令用 SCL_Ret_Set() 写入
-  *            - 命令调用：普通式 'cmd a b' 与函数式 'cmd_xxx(a,b,...)'（'(' 紧邻命令名）
+  *            - 命令调用：普通式 'cmd a b'（空白分隔，支持引号参数与 ${} 展开）
   *            - 控制流（已确认语义）：
   *                if -t "子链A" -f "子链B"   // 读 G_RETURN：真执行 -t，假执行 -f；可省略其一
   *                while -b; <body>; while -e // G_RETURN==false 退出；==true 回跳 body（do-while）

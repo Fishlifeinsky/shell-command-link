@@ -4,7 +4,7 @@
   * @brief   PC 侧 SCL 全量测试（无硬件依赖）
   *
   *          五类测试（按用户要求）：
-  *            1) 功能/语法（变量、${} 展开、普通/函数式调用、if、while、异步 wait）
+  *            1) 功能/语法（变量、${} 展开、普通调用、if、while、异步 wait）
   *            2) 大小     —— 打印配置与静态 RAM 估算；最终 .text/.data/.bss 用 binutils
   *                          `size` 在外部实测（见构建脚本）
   *            3) 速度     —— 命令分发吞吐（条/秒）与每命令步进开销
@@ -153,15 +153,16 @@ static void TestBasics(void)
     t = RunCap("var verylongname=1", g_cap, sizeof(g_cap));
     CHECK(strstr(g_cap, "变量名过长") != NULL, "超长变量名被拒");
 
-    /* 普通调用 / 函数式调用 */
+    /* 普通调用（函数式调用已移除：add(2,3) 按未知命令报错） */
     t = RunCap("add 2 3", g_cap, sizeof(g_cap));
     CHECK(strstr(g_cap, "add=5") != NULL, "普通调用 add 2 3");
     t = RunCap("add(2,3)", g_cap, sizeof(g_cap));
-    CHECK(strstr(g_cap, "add=5") != NULL, "函数式调用 add(2,3)");
+    CHECK(strstr(g_cap, "add=5") == NULL, "函数式调用已移除(不执行)");
+    CHECK(strstr(g_cap, "未知命令") != NULL, "函数式调用按未知命令报错");
 
-    /* 函数式 + 引号参数（含空格） */
-    t = RunCap("echo(\"x y\",z)", g_cap, sizeof(g_cap));
-    CHECK(strstr(g_cap, "echo x y z") != NULL, "函数式引号参数");
+    /* 普通式引号参数（含空格） */
+    t = RunCap("echo \"x y\" z", g_cap, sizeof(g_cap));
+    CHECK(strstr(g_cap, "echo x y z") != NULL, "普通式引号参数");
 
     /* 引号内 ';' 不分割（普通式） */
     t = RunCap("echo 'a;b'; echo after", g_cap, sizeof(g_cap));

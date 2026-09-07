@@ -520,9 +520,10 @@ class Compiler:
 
     @staticmethod
     def need_quote(text):
+        """普通式参数以空白分隔：含空白/';'/引号/反斜杠或为空才需要引号"""
         if text == "":
             return True
-        for ch in " \t,;()\"'\\\n\r":
+        for ch in " \t;\"'\\":
             if ch in text:
                 return True
         return False
@@ -566,10 +567,13 @@ class Compiler:
         raise S2CError("未知 AST 节点 %r" % (k,))
 
     def emit_call(self, name, args, depth):
+        """输出 SCL 普通式调用：'cmd a b'（函数式已从 SCL 移除，故不再用括号）"""
+        if not args:
+            return name
         parts = []
         for a in args:
             parts.append(self.quote_lit(a, depth))
-        return name + "(" + ",".join(parts) + ")"
+        return name + " " + " ".join(parts)
 
     def emit_var(self, name, value, depth, vs):
         if len(name) > self.name_max:

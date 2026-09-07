@@ -6,8 +6,10 @@
 
 ## 1. 目标
 
-让用户用**可读的现代语法**（多行、注释、大括号块、函数式调用）写"指令脚本"，
+让用户用**可读的现代语法**（多行、注释、大括号块、括号式函数调用）写"指令脚本"，
 再由本工具**转译成单行 SCL 指令链**，可直接喂给 `SCL_Run()`。
+> 说明：SCL 指令链已移除函数式调用，故转译器输出一律为 SCL **普通式** `cmd a b`；
+> 现代源语法仍用 `cmd(a, b)` 书写（更好看），由本工具负责“去括号”。
 
 ```s2c
 # 现代语法（demo2.s2c 简化）
@@ -22,9 +24,9 @@ while (not_done()) {  # C 语义 while：先判后跑
 }
 ```
 
-转译结果（示意）：
+转译结果（示意，普通式）：
 ```
-var sp=100;demo_reset(3);demo_inc();if -t "while -b;echo(step,${sp});demo_inc();while -e";echo(loop-end)
+var sp=100;demo_reset 3;demo_inc;if -t "while -b;echo step ${sp};demo_inc;while -e";echo loop-end
 ```
 
 ## 2. 约束与映射原则
@@ -37,8 +39,9 @@ SCL 控制流只有 `G_RETURN`（命令写入、`if`/`while -e` 读取即清零�
 | `if (fn(...)) {A} else {B}` | 先跑条件链，G_RETURN 真→A、假→B | `<cond>; if -t "A" -f "B"` |
 | `if {A} else {B}`（无条件） | 沿用**当前** G_RETURN | `if -t "A" -f "B"` |
 | `while (fn(...)) {B}` | C 语义（先判后跑） | `<c0>; if -t "while -b;B;<c1>;while -e"` |
-| `ret(1)` / `true` / `false` | 置 G_RETURN（映射到目标命令） | `<ret_setter>(1/0)` |
+| `ret(1)` / `true` / `false` | 置 G_RETURN（映射到目标命令） | `<ret_setter> 1/0` |
 
+- 输出命令统一为 SCL **普通式**：`cmd a b`；含空格的参数自动加引号。括号只在 modern 源语法里出现，转译时被剥掉。
 - `while(cond)` 降级为"门控 do-while"：先判（gate），真才进 do-while；每圈 body 后重判，
   `-e` 读到 false 退出 → 与 C `while(cond){body}` 等价。
 - 用户自定义 `fn name(args){...}`：**编译期内联展开**（textual inline），调用点替换为函数体，

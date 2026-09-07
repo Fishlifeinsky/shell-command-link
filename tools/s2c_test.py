@@ -58,36 +58,36 @@ def test_unit():
     unit_exact(
         "var sp=100\ncmp(1,${sp})\n"
         "if {\n echo(${sp},\"ok\")\n} else {\n echo(${sp},\"ng\")\n}",
-        'var sp=100;cmp(1,${sp});if -t "echo(${sp},ok)" -f "echo(${sp},ng)"',
+        'var sp=100;cmp 1 ${sp};if -t "echo ${sp} ok" -f "echo ${sp} ng"',
         "if/else 无条件 + 变量/字符串参数")
 
     # while(cond)（C 语义）+ fn 作条件
     unit_exact(
         "var sp=100\nfn not_done() {\n demo_inc()\n}\n"
         "demo_reset(3)\nwhile (not_done()) {\n echo(${sp})\n}",
-        'var sp=100;demo_reset(3);demo_inc();'
-        'if -t "while -b;echo(${sp});demo_inc();while -e"',
+        'var sp=100;demo_reset 3;demo_inc;'
+        'if -t "while -b;echo ${sp};demo_inc;while -e"',
         "while(用户fn) 门控 do-while")
 
     # ret 糖衣 + if(命令) + 分支内引号嵌套 + 多语句 ';'
     unit_exact(
         'ret(1); if (cmp(2,2)) { echo("a b",x) } else { echo("c") }; false',
-        'setret(1);cmp(2,2);if -t "echo(\'a b\',x)" -f "echo(c)";setret(0)',
+        'setret 1;cmp 2 2;if -t "echo \'a b\' x" -f "echo c";setret 0',
         "ret/false 糖衣 + if(命令) + 嵌套引号自动交替")
 
     # while(false) 编译为空（不执行）
     unit_exact("while (false) { echo(x) }\necho(ok)",
-               "echo(ok)",
+               "echo ok",
                "while(false) 编译为空")
 
     # 多行实参 + 引号字符串
     unit_exact('note("line1",\n     "line2")',
-               'note(line1,line2)',
+               "note line1 line2",
                "多行实参（无空格字符串转裸词）")
 
     # 值带空格（引号包裹，SCL var 可用）
     unit_exact('var t = "hello world"\necho(${t})',
-               'var t="hello world";echo(${t})',
+               'var t="hello world";echo ${t}',
                "变量值含空格")
 
 
@@ -182,14 +182,14 @@ def test_backfeed():
             print("       " + out.replace("\n", " / ")[:400])
 
     # 3.2 单元里的两条代表性链也真实跑
-    chain2 = ('var sp=100;demo_reset(3);demo_inc();'
-              'if -t "while -b;echo(${sp});demo_inc();while -e"')
+    chain2 = ('var sp=100;demo_reset 3;demo_inc;'
+              'if -t "while -b;echo ${sp};demo_inc;while -e"')
     ok, out = run_chain(chain2, "unit2")
     check(ok, "回喂 while(fn) 单元链")
     if not ok:
         print("       " + out.replace("\n", " / ")[:400])
 
-    chain3 = 'setret(1);cmp(2,2);if -t "echo(\'a b\',x)" -f "echo(c)";setret(0)'
+    chain3 = 'setret 1;cmp 2 2;if -t "echo \'a b\' x" -f "echo c";setret 0'
     ok, out = run_chain(chain3, "unit3")
     check(ok, "回喂 ret/if(嵌套引号) 单元链")
     if not ok:
