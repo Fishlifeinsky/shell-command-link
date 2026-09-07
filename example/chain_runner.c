@@ -9,8 +9,9 @@
   *            退出码：0=完成；2=SCL_Run 拒绝；3=超时（防死循环）。
   *
   *          编译（建议放大脚本缓冲，供较长的现代脚本转译结果）：
-  *            gcc -O2 -DSCL_CFG_SCRIPT_MAX=2048 -I scl/Inc -I example \
-  *                scl/Src/scl.c example/scl_port.c example/demo_cmds.c \
+  *            gcc -O2 -DSCL_CFG_SCRIPT_MAX=2048 -I scl/Inc -I scl/Src -I example \
+  *                scl/Src/scl.c scl/Src/scl_var.c scl/Src/scl_env.c \
+  *                example/scl_port.c example/demo_cmds.c \
   *                example/chain_runner.c -o build/chain_runner
   ******************************************************************************
   */

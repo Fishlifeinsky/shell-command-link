@@ -18,12 +18,14 @@
   *                        SCL_Port_PutChar 换成 UART 发送即可。
   *
   *          编译（Windows/MinGW）：
-  *            gcc -O2 -pipe -Wall -Wextra -I scl/Inc -I example \
-  *                scl/Src/scl.c example/scl_port.c example/demo_cmds.c \
+  *            gcc -O2 -pipe -Wall -Wextra -I scl/Inc -I scl/Src -I example \
+  *                scl/Src/scl.c scl/Src/scl_var.c scl/Src/scl_env.c \
+  *                example/scl_port.c example/demo_cmds.c \
   *                example/scl_shell.c example/sim_uart.c -o build/sim_uart
   *          （Linux）:
-  *            gcc -O2 -pipe -Wall -Wextra -I scl/Inc -I example \
-  *                scl/Src/scl.c example/scl_port.c example/demo_cmds.c \
+  *            gcc -O2 -pipe -Wall -Wextra -I scl/Inc -I scl/Src -I example \
+  *                scl/Src/scl.c scl/Src/scl_var.c scl/Src/scl_env.c \
+  *                example/scl_port.c example/demo_cmds.c \
   *                example/scl_shell.c example/sim_uart.c -o build/sim_uart
   ******************************************************************************
   */

@@ -14,8 +14,9 @@
   *            6) 重复性、速度与大小信息
   *
   *          编译（示例）：
-  *            gcc -O2 -Wall -Wextra -I scl/Inc -I example \
-  *                scl/Src/scl.c example/scl_port.c example/demo_cmds.c \
+ *            gcc -O2 -Wall -Wextra -I scl/Inc -I scl/Src -I example \
+ *                scl/Src/scl.c scl/Src/scl_var.c scl/Src/scl_env.c \
+ *                example/scl_port.c example/demo_cmds.c example/scl_shell.c \
   *                example/main.c -o build/scl_test
   ******************************************************************************
   */

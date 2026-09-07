@@ -51,7 +51,8 @@
 
 ```
 scl/Inc/scl.h scl_cfg.h       库公共接口 + 可裁剪配置
-scl/Src/scl.c                 解析器/执行器/变量/异步/会话与只读程序支持
+scl/Src/scl.c scl_var.c scl_env.c   核心(编译/执行/命令/异步) · 会话变量 · 环境变量缓冲
+scl/Src/scl_priv.h             多模块内部共享头
 tools/scl_script2chain.py     现代语法脚本 → SCL 指令链（Python 转译器）
 tools/scl_emit_c.py           SCL 脚本 → const C 程序（Flash 只读，省 RAM）
 tools/s2c_test.py             转译器测试（精确比对 + 真实回喂 + emit-c）
@@ -82,13 +83,15 @@ int main(void) {
 ## 构建示例（PC 测试）
 
 ```bash
-gcc -O2 -Wall -Wextra -I scl/Inc -I example \
-    scl/Src/scl.c example/scl_port.c example/demo_cmds.c \
+gcc -O2 -Wall -Wextra -I scl/Inc -I scl/Src -I example \
+    scl/Src/scl.c scl/Src/scl_var.c scl/Src/scl_env.c \
+    example/scl_port.c example/demo_cmds.c \
     example/scl_shell.c example/main.c -o build/scl_test        # 全量测试(含 Shell)
 
 # 交互终端：把 PC 终端当 MCU 串口（echo/var/Tab 补全/↑↓ 历史/quit）
-gcc -O2 -Wall -Wextra -I scl/Inc -I example \
-    scl/Src/scl.c example/scl_port.c example/demo_cmds.c \
+gcc -O2 -Wall -Wextra -I scl/Inc -I scl/Src -I example \
+    scl/Src/scl.c scl/Src/scl_var.c scl/Src/scl_env.c \
+    example/scl_port.c example/demo_cmds.c \
     example/scl_shell.c example/sim_uart.c -o build/sim_uart && ./build/sim_uart
 ```
 

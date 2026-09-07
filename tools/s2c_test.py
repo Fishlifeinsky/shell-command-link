@@ -170,8 +170,11 @@ def build_runner():
     # -pipe：gcc 直通汇编器，避免临时 .s 落盘（透明加密环境更稳）
     cmd = ["gcc", "-O2", "-pipe"] + RUNNER_CFG + [
         "-I", str(ROOT / "scl" / "Inc"),
+        "-I", str(ROOT / "scl" / "Src"),
         "-I", str(ROOT / "example"),
         str(ROOT / "scl" / "Src" / "scl.c"),
+        str(ROOT / "scl" / "Src" / "scl_var.c"),
+        str(ROOT / "scl" / "Src" / "scl_env.c"),
         str(ROOT / "example" / "scl_port.c"),
         str(ROOT / "example" / "demo_cmds.c"),
         str(ROOT / "example" / "chain_runner.c"),
@@ -315,8 +318,11 @@ def test_emitc():
                                 ("prog_min.exe", ["-DSCL_CFG_RUN_TEXT_EN=0"])):
         exe = ROOT / "build" / exe_name
         cmd = ["gcc", "-O2", "-pipe"] + RUNNER_CFG + extra_cfg + [
-            "-I", str(ROOT / "scl" / "Inc"), "-I", str(ROOT / "example"),
+            "-I", str(ROOT / "scl" / "Inc"), "-I", str(ROOT / "scl" / "Src"),
+            "-I", str(ROOT / "example"),
             str(ROOT / "scl" / "Src" / "scl.c"),
+            str(ROOT / "scl" / "Src" / "scl_var.c"),
+            str(ROOT / "scl" / "Src" / "scl_env.c"),
             str(ROOT / "example" / "scl_port.c"),
             str(ROOT / "example" / "demo_cmds.c"),
             str(ROOT / "build" / "_emitc_progs.c"),
