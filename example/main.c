@@ -1,10 +1,12 @@
 /**
   ******************************************************************************
   * @file    main.c
-  * @brief   PC 侧 SCL 全量测试（v4：文本→字节码 + label/jump 解释执行）
+  * @brief   PC 侧 SCL 全量测试（v0.2：类型化参数缓存 + bool/int/flag/string 变量 + 内置运算）
   *
   *          覆盖：
   *            1) 基础：变量、${} 展开、普通式命令、引号参数、编译拒绝
+  *            1b) 类型化变量（bool/int/flag/string）与类型校验
+  *            1c) 内置 int/bool 运算指令（iadd/idiv/ineg/ilt/band/btest 等）
   *            2) label/jump：无条件跳、jump -a 条件跳（真跳/假不跳/读后清零）
   *            3) do-while 循环（label + 条件 jump）终止性
   *            4) 异步命令 wait（指令边界等待）
@@ -108,17 +110,20 @@ static void TestBasics(void)
     int t;
     Section("1. 基础/变量/命令");
 
-    t = RunCap("var a=hello; echo ${a}", g_cap, sizeof(g_cap));
+    t = RunCap("var string a=hello; echo ${a}", g_cap, sizeof(g_cap));
     CHECK(t >= 0 && strstr(g_cap, "echo hello") != NULL, "${a} 展开取值");
     CHECK(SCL_VarCount() == 0, "脚本结束自动释放变量");
 
-    t = RunCap("var a=1; var b=2; var c=3", g_cap, sizeof(g_cap));
-    CHECK(strstr(g_cap, "已满") != NULL, "变量槽>2 被拒(编译/执行均校验)");
+    t = RunCap("var int a=1;var int b=2;var int c=3;var int d=4;var int e=5",
+               g_cap, sizeof(g_cap));
+    CHECK(strstr(g_cap, "已满") != NULL, "变量槽>4 被拒(执行校验)");
 
-    t = RunCap("var a=1; var b=2; free a; var c=3", g_cap, sizeof(g_cap));
-    CHECK(strstr(g_cap, "已满") == NULL, "free 后槽可复用");
+    t = RunCap("var int a=1;var int b=2;free a;var int c=3;echo ${c}",
+               g_cap, sizeof(g_cap));
+    CHECK(strstr(g_cap, "已满") == NULL && strstr(g_cap, "echo 3") != NULL,
+          "free 后槽可复用");
 
-    t = RunCap("var t=\"a b\"; echo [${t}]", g_cap, sizeof(g_cap));
+    t = RunCap("var string t=\"a b\"; echo [${t}]", g_cap, sizeof(g_cap));
     CHECK(strstr(g_cap, "echo [a b]") != NULL, "var 值含空格(引号)");
 
     t = RunCap("echo \"x y\" z", g_cap, sizeof(g_cap));
@@ -131,6 +136,90 @@ static void TestBasics(void)
     CHECK(SCL_Run("jump Lx;echo y") == 0u, "jump 未定义 label 被拒");
     CHECK(SCL_Run("jump -a;echo y") == 0u, "jump 缺目标被拒");
     CHECK(SCL_Run("") == 0u, "空链被拒");
+}
+
+/* ========================== 1b. 类型化变量 ========================== */
+
+static void TestVarsTyped(void)
+{
+    int t;
+    Section("1b. 类型化变量 bool/int/flag/string");
+
+    t = RunCap("var bool b=true;var int i=-12;var flag f=-x;var string s=abc;var",
+               g_cap, sizeof(g_cap));
+    CHECK(t >= 0 && strstr(g_cap, "b : bool = true") != NULL, "bool 变量声明与列表");
+    CHECK(strstr(g_cap, "i : int = -12") != NULL, "int 变量（负数）");
+    CHECK(strstr(g_cap, "f : flag = -x") != NULL, "flag 变量");
+    CHECK(strstr(g_cap, "s : string = abc") != NULL, "string 变量");
+
+    CHECK(SCL_VarSetT("k", SCL_T_INT, "42") == 0, "VarSetT int 设置");
+    CHECK(SCL_VarType("k") == SCL_T_INT, "VarType 返回 int");
+    CHECK(strcmp(SCL_VarGet("k"), "42") == 0, "VarGet 文本为 42");
+    CHECK(SCL_VarSetT("k", SCL_T_INT, "zz") != 0, "VarSetT int 非数字拒绝");
+    SCL_VarFree("k");
+    CHECK(SCL_VarSet("z", "7") == 0 && SCL_VarType("z") == SCL_T_INT,
+          "VarSet 自动推断 int");
+    CHECK(SCL_VarSet("z", "true") == 0 && SCL_VarType("z") == SCL_T_BOOL,
+          "VarSet 自动推断 bool(覆盖)");
+    SCL_VarFree("z");
+
+    t = RunCap("var int bad=zz;echo after", g_cap, sizeof(g_cap));
+    CHECK(strstr(g_cap, "var: 参数错误") != NULL && strstr(g_cap, "echo after") != NULL,
+          "int 值非数字拒绝且继续执行");
+    t = RunCap("var flag ff=xx", g_cap, sizeof(g_cap));
+    CHECK(strstr(g_cap, "var: 参数错误") != NULL, "flag 值需 -x 被拒");
+    t = RunCap("var old=1", g_cap, sizeof(g_cap));
+    CHECK(strstr(g_cap, "缺少类型") != NULL, "v0.1 缺类型 var 被提示");
+
+    t = RunCap("var bool b=true;var int i=7;var flag f=-x;echo ${b}/${i}/${f}",
+               g_cap, sizeof(g_cap));
+    CHECK(strstr(g_cap, "echo true/7/-x") != NULL, "${} 多类型变量文本展开");
+}
+
+/* ========================== 1c. 内置运算指令 ========================== */
+
+static void TestArith(void)
+{
+    int t;
+    Section("1c. 内置 int/bool 运算指令");
+
+    RunCap("var int n=0;iadd n 1 n;echo n=${n}", g_cap, sizeof(g_cap));
+    CHECK(strstr(g_cap, "echo n=1") != NULL, "iadd 写回变量");
+
+    RunCap("var int a=7;var int b=3;isub a b a;imul a 2 a;echo a=${a}",
+           g_cap, sizeof(g_cap));
+    CHECK(strstr(g_cap, "echo a=8") != NULL, "isub/imul 链式写回");
+
+    RunCap("var int a=10;var int b=3;idiv a b a;imod b 2 b;echo a=${a} b=${b}",
+           g_cap, sizeof(g_cap));
+    CHECK(strstr(g_cap, "echo a=3 b=1") != NULL, "idiv/imod 写回");
+
+    RunCap("var int a=5;ineg a a;echo a=${a}", g_cap, sizeof(g_cap));
+    CHECK(strstr(g_cap, "echo a=-5") != NULL, "ineg 取负写回");
+
+    RunCap("var int x=5;ilt x 10;jump -a L;echo no;label L;echo yes",
+           g_cap, sizeof(g_cap));
+    CHECK(strstr(g_cap, "echo yes") != NULL && strstr(g_cap, "echo no") == NULL,
+          "ilt 真→jump -a");
+    RunCap("var int x=5;ieq x 6;jump -a L;echo ne;label L;echo end",
+           g_cap, sizeof(g_cap));
+    CHECK(strstr(g_cap, "echo ne") != NULL, "ieq 假不跳");
+
+    RunCap("var bool p=true;var bool q=false;btest p;bnot p;jump -a L1;echo nf;label L1;echo end1",
+           g_cap, sizeof(g_cap));
+    CHECK(strstr(g_cap, "echo nf") != NULL, "bnot(p)=false 不跳");
+    RunCap("var bool p=true;var bool q=false;btest p;band p q;jump -a L;echo andf;label L;echo end",
+           g_cap, sizeof(g_cap));
+    CHECK(strstr(g_cap, "echo andf") != NULL, "band(p,q)=false 不跳");
+    RunCap("var bool p=true;bor p true;jump -a L;echo no;label L;echo oryes",
+           g_cap, sizeof(g_cap));
+    CHECK(strstr(g_cap, "echo oryes") != NULL && strstr(g_cap, "echo no") == NULL,
+          "bor(p,true) 真→jump");
+
+    t = RunCap("var int a=1;idiv a 0 a;echo after", g_cap, sizeof(g_cap));
+    CHECK(strstr(g_cap, "除数为 0") != NULL && strstr(g_cap, "echo after") != NULL,
+          "idiv 除 0 报错后继续");
+    CHECK(SCL_VarCount() == 0 && SCL_Idle(), "运算错误后状态干净");
 }
 
 /* ========================== 2. label / jump ========================== */
@@ -229,8 +318,10 @@ static void TestReliability(void)
             "label A;label A;echo x",
             "jump NOPE",
             "jump -z L1",
-            "var toolongname123=1",
-            "var x=1234567890123456",
+            "var int toolongname123=1",
+            "var int x=1234567890123456",
+            "var old=1",
+            "var flag f=xx",
             "echo a b c d e f g h i j k l",
             "jump -a",
             "label ;echo x",
@@ -344,7 +435,7 @@ int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
 
-    printf("=== SCL v4 (文本→字节码 + label/jump) 全量测试 ===\n");
+    printf("=== SCL v0.2 (类型化参数缓存 + bool/int/flag/string 变量 + 内置运算) ===\n");
     SCL_Init();
 #if (SCL_EX_CMDS_EN == 1u)
     Scl_Demo_Register();
@@ -353,6 +444,8 @@ int main(void)
 #endif
 
     TestBasics();
+    TestVarsTyped();
+    TestArith();
     TestJump();
     TestAsync();
     TestReliability();

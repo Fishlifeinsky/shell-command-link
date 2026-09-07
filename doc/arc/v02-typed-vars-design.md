@@ -1,7 +1,7 @@
 # v0.2 设计：类型化参数缓存 + 多类型变量 + int/bool 运算指令（草案·待确认）
 
 - 版本：v0.2（基于 v0.1 字节码 + label/jump 运行时）
-- 状态：**已确认（默认项 A/B/C/D 全部采用），v0.2 实施中**
+- 状态：**已实施完成**（默认项 A/B/C/D 全部采用）；scl_test PASS=59 / s2c_test PASS=38 全绿
 - 用户已确认（2026-09-07）：
   1. 参数 type 块：**type 开头、仅 string 带 len**
   2. 变量类型：**显式声明** `var bool b=true` / `var int i=1`

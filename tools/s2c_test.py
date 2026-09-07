@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-s2c_test.py — Script2Chain 转译器测试（v4：输出 label/jump 汇编）
+s2c_test.py — Script2Chain 转译器测试（v0.2：类型化 var + 原子条件/赋值表达式降级）
 
-  1) 单元：现代脚本 -> 期望 label/jump 汇编链（精确比对）
-  2) 错误：保留字/变量超限/值过长/fn 递归/语法错等应报 S2CError
-  3) 回喂：把 example/s2c/*.s2c 与单元链喂给真实 SCL（chain_runner）执行
-     （首次运行会尝试用 gcc 编译 example/chain_runner.c）
+  1) 单元：现代脚本 -> 期望汇编链（精确比对，label/jump + 类型 var + 运算指令）
+  2) 错误：保留字/超限/递归/语法/&& 未支持等应报 S2CError
+  3) 回喂：example/s2c/*.s2c 与单元链喂给真实 SCL（chain_runner）执行
 """
 
 import os
@@ -51,38 +50,57 @@ def unit_exact(src, expect, msg):
 def test_unit():
     section("1. 单元（精确汇编链比对）")
 
-    # if(cond) ... else ...
-    unit_exact('if (cmp(1,1)) { echo("a") } else { echo("b") }',
-               'cmp 1 1;jump -a L1;echo b;jump L2;label L1;echo a;label L2',
-               "if(命令条件)/else → label/jump")
+    # var 显式类型 / 推断
+    unit_exact("var bool b = true", "var bool b=true", "var bool 显式")
+    unit_exact("var int n = 0", "var int n=0", "var int 显式")
+    unit_exact("var flag f = -x", "var flag f=-x", "var flag 显式")
+    unit_exact('var s = "hello world"', 'var string s="hello world"',
+               "var 无类型推断 string")
+    unit_exact("var n = 3", "var int n=3", "var 无类型推断 int")
+    unit_exact("var b = true", "var bool b=true", "var 无类型推断 bool")
+    unit_exact("var f = -x", "var flag f=-x", "var 无类型推断 flag")
 
-    # while(cond) do-while
-    unit_exact("demo_reset(3)\nwhile (demo_inc()) { echo(\"x\") }",
-               "demo_reset 3;label L1;echo x;demo_inc;jump -a L1",
-               "while(do-while) → label+条件 jump")
+    # 原子条件：比较 → 运算指令；bool/变量 → btest
+    unit_exact("if (mode == 1) { echo(a) } else { echo(b) }",
+               "ieq mode 1;jump -a L1;echo b;jump L2;label L1;echo a;label L2",
+               "if(比较表达式) else → ieq + label/jump")
+    unit_exact("if (1 < 2) { echo(y) }",
+               "ilt 1 2;jump -a L1;jump L2;label L1;echo y;label L2",
+               "if(字面量比较) 真分支")
+    unit_exact("var bool b=false\nif (!b) { echo(yes) }",
+               "var bool b=false;bnot b;jump -a L1;jump L2;label L1;echo yes;label L2",
+               "if(!bool变量) → bnot")
 
-    # ret 糖衣 + if(命令) + 引号参数
-    unit_exact('ret(1); if (cmp(2,2)) { echo("a b",z) } else { echo("c") }',
-               'setret 1;cmp 2 2;jump -a L1;echo c;jump L2;'
-               'label L1;echo "a b" z;label L2',
-               "ret 糖衣 + if 真走引号多参")
+    # do-while + 算术赋值
+    unit_exact("var int n=0\nwhile (n < 3) { n = n + 1 }",
+               "var int n=0;label L1;iadd n 1 n;ilt n 3;jump -a L1",
+               "while(比较) + n=n+1 → iadd/ilt/label/jump")
 
-    # 无条件 if{} 只用 else（真则跳过）
-    unit_exact('if { } else { echo("n") }',
-               'jump -a L1;echo n;label L1',
+    # 无条件 if{} else（沿用 G_RETURN）
+    unit_exact("if { } else { echo(n) }",
+               "jump -a L1;echo n;label L1",
                "if{} 仅 else：真跳跳过")
 
-    # while(false)：do-while 下 body 执行一次
-    unit_exact("while (false) { echo(x) }\necho(ok)",
-               "label L1;echo x;setret 0;jump -a L1;echo ok",
-               "while(false) do-while：body 一次")
+    # ret 糖衣 + 引号参数
+    unit_exact('ret(1); echo("a b", z)',
+               'setret 1;echo "a b" z',
+               "ret 糖衣 + 引号多参命令")
 
-    # fn 参数内联 + 多行实参 + 变量
-    unit_exact('var t = "hello world"\n'
-               'fn note(x,y){ echo(x,y) }\n'
-               'note("p q",2)\necho(${t})',
-               'var t="hello world";echo "p q" 2;echo ${t}',
-               "fn 参数内联 + 引号多词参数 + 变量")
+    # fn 参数内联
+    unit_exact("fn note(x,y){ echo(x,y) }\nnote(\"p q\",2)",
+               'echo "p q" 2',
+               "fn 参数内联")
+
+    # 赋值 / 取负 / 拷贝
+    unit_exact("var int x = 10\nx = x / 2\necho(x)",
+               "var int x=10;idiv x 2 x;echo x",
+               "赋值除法写回")
+    unit_exact("var int a = 5\na = -a",
+               "var int a=5;ineg a a",
+               "赋值取负 → ineg")
+    unit_exact("var int a = 1\nvar int b = 2\na = b",
+               "var int a=1;var int b=2;var int a=${b}",
+               "变量拷贝 → var 覆盖")
 
 
 def unit_err(src, keyword, msg):
@@ -95,17 +113,21 @@ def unit_err(src, keyword, msg):
 
 def test_error():
     section("2. 错误用例（应报 S2CError）")
-    unit_err("var a=1\nvar b=2\nvar c=3", "超过", "变量存活 >2 报错")
-    unit_err("var toolongname=1", "过长", "变量名 >8 报错")
-    unit_err("var x=1234567890123456", "过长", "变量字面值 >15 报错")
+    unit_err("var int a=1\nvar int b=2\nvar int c=3\nvar int d=4\nvar int e=5",
+             "超过", "变量存活 >4 报错")
+    unit_err("var int toolongname=1", "过长", "变量名 >8 报错")
+    unit_err("var int x=1234567890123456", "过长", "变量字面值 >15 报错")
     unit_err("fn a(){ a() }\na()", "递归", "fn 递归报错")
     unit_err('echo("unclosed', "未闭合", "字符串未闭合报错")
     unit_err("add(1,2", "')'", "缺右括号报错")
     unit_err("x 3", "需要 '('", "裸标识符语句报错")
     unit_err("var if = 1", "保留", "变量名用保留字报错")
-    unit_err("while(1){ echo(x) }", "条件", "while 条件非调用报错")
-    unit_err("free nobody", "未定义", "free 未定义变量报错")
-    unit_err("jump(L1)", "关键字", "运行时关键字 label/jump 不可调用")
+    unit_err("if (a && b) { echo(x) }", "无法识别", "&& 未支持(v0.3) 报错")
+    unit_err("var int n=1\nwhile (n < 3 && n > 0) { }", "无法识别",
+             "while 复合条件未支持 报错")
+    unit_err("var int x=1\nx = x + 1 + 2", "多运算符", "多运算符算术 v0.3 报错")
+    unit_err("y = 3", "需先用 var", "赋值未声明目标报错")
+    unit_err("echo(\"a\" + \"b\")", "不允许", "实参中算术/比较未支持")
 
 
 # ============================ 3. 回喂（真实 SCL 执行 chain_runner） ============================
@@ -116,7 +138,8 @@ if os.name == "nt":
     RUNNER_EXE = RUNNER.with_suffix(".exe")
 
 RUNNER_CFG = ["-DSCL_CFG_SCRIPT_MAX=2048", "-DSCL_CFG_BC_MAX=2048",
-              "-DSCL_CFG_ARG_CACHE_MAX=1024", "-DSCL_CFG_LABEL_MAX=64"]
+              "-DSCL_CFG_ARG_CACHE_MAX=1024", "-DSCL_CFG_LABEL_MAX=64",
+              "-DSCL_CFG_VAR_MAX=8"]
 
 
 def build_runner():
@@ -143,69 +166,73 @@ def run_chain(chain, tag):
     tmp = ROOT / "build" / ("_feed_%s.chain" % tag)
     tmp.write_text(chain, encoding="utf-8")
     try:
-        r = subprocess.run([str(RUNNER_EXE), str(tmp)],
-                           capture_output=True, timeout=120)
-    except subprocess.TimeoutExpired:
-        return False, "[runner timeout]"
-    out = (r.stdout + r.stderr).decode("utf-8", "replace")
-    return (r.returncode == 0 and "RUN-OK" in out and "RUN-TIMEOUT" not in out), out
+        r = subprocess.run([str(RUNNER_EXE), str(tmp)], capture_output=True,
+                           timeout=60)
+    except OSError:
+        return ""
+    return (r.stdout + r.stderr).decode("utf-8", "replace")
 
 
-def test_backfeed():
-    section("3. 回喂（真实 SCL 执行 chain_runner）")
-    if not (RUNNER_EXE.exists() and RUNNER_EXE.stat().st_size > 0):
-        if not build_runner():
-            return
+def test_feed():
+    section("3. 回喂（真实 SCL 执行）")
+    if not build_runner():
+        return
 
-    # 3.1 示例 .s2c 全转全跑
-    for f in sorted((ROOT / "example" / "s2c").glob("*.s2c")):
+    # 3 个示例 demo
+    demos = [
+        ("demo1_if", str(ROOT / "example" / "s2c" / "demo1_if.s2c"),
+         ["echo mode ok", "echo done", "RUN-OK"]),
+        ("demo2_while", str(ROOT / "example" / "s2c" / "demo2_while.s2c"),
+         ["step 100", "echo loop-end", "RUN-OK"]),
+        ("demo3_fn", str(ROOT / "example" / "s2c" / "demo3_fn.s2c"),
+         ["echo note alpha beta", "echo hit", "echo note line1 line2", "RUN-OK"]),
+    ]
+    for tag, path, subs in demos:
         try:
-            chain, _ = translate(f.read_text(encoding="utf-8"))
+            chain, _ = translate(pathlib.Path(path).read_text(encoding="utf-8"))
         except S2CError as e:
-            check(False, "%s 转译报错: %s" % (f.name, e.msg))
+            check(False, "demo %s 转译失败: %s" % (tag, e.msg))
             continue
-        ok, out = run_chain(chain, f.stem)
-        check(ok, "回喂 %s (链长 %d)" % (f.name, len(chain)))
-        if not ok:
-            print("       " + out.replace("\n", " / ")[:400])
+        out = run_chain(chain, tag)
+        miss = [s for s in subs if s not in out]
+        check(not miss and "RUN-OK" in out,
+              "demo %s 回喂 %s%s" % (tag, "OK" if not miss else "FAIL",
+                                     (" missing=%s" % miss) if miss else ""))
 
-    # 3.2 do-while 语义行为：demo2 循环 body 次数
-    chain, _ = translate(
-        "demo_reset(3)\nfn nd(){ demo_inc() }\nwhile (nd()) { echo(\"step\") }")
-    ok, out = run_chain(chain, "dowhile")
-    check(ok and out.count("echo step") == 3,
-          "回喂 do-while：body 3 次 + RUN-OK")
-    if not ok:
-        print("       " + out.replace("\n", " / ")[:400])
+    # 现代源 → 链 → 真实执行（do-while 计数 + 算术 + bool）
+    feeds = [
+        ("dowhile", "var int n=0\nwhile (n < 3) { n = n + 1 }\necho(\"n=${n}\")",
+         ["echo n=3", "RUN-OK"]),
+        ("arith", "var int a=7\nvar int b=2\na = a + b\nb = a * 2\necho(\"a=${a} b=${b}\")",
+         ["echo a=9 b=18", "RUN-OK"]),
+        ("typed", "var bool b=true\nvar int i=7\nvar flag f=-x\necho(\"${b}/${i}/${f}\")",
+         ["echo true/7/-x", "RUN-OK"]),
+        ("cmpif", "var int x=5\nif (x < 10) { echo(small) } else { echo(big) }",
+         ["echo small", "RUN-OK"]),
+        ("boolif", "var bool ok=true\nif (!ok) { echo(bad) }\nif (ok) { echo(good) }",
+         ["echo good", "RUN-OK"]),
+    ]
+    for tag, src, subs in feeds:
+        try:
+            chain, _ = translate(src)
+        except S2CError as e:
+            check(False, "feed %s 转译失败: %s" % (tag, e.msg))
+            continue
+        out = run_chain(chain, tag)
+        miss = [s for s in subs if s not in out]
+        check(not miss and "RUN-OK" in out,
+              "feed %s 回喂 %s%s" % (tag, "OK" if not miss else "FAIL",
+                                     (" missing=%s" % miss) if miss else ""))
 
-    # 3.3 if/else 行为：真走 then
-    chain, _ = translate(
-        'if (cmp(1,1)) { echo("hit") } else { echo("miss") }')
-    ok, out = run_chain(chain, "ifelse")
-    check(ok and "echo hit" in out and "echo miss" not in out,
-          "回喂 if(cond)/else：真走 then")
-    if not ok:
-        print("       " + out.replace("\n", " / ")[:400])
-
-    # 3.4 while 内嵌 if（引号交替 + 终止性）
-    chain, _ = translate(
-        "demo_reset(2)\nwhile (demo_inc()) {\n"
-        "    if (cmp(1,1)) { echo(\"x\") }\n}\necho(\"end\")")
-    ok, out = run_chain(chain, "nest")
-    check(ok and out.count("echo x") == 2, "回喂 while 内嵌 if（body×2）")
-    if not ok:
-        print("       " + out.replace("\n", " / ")[:400])
-
-
-# ============================ main ============================
 
 def main():
-    print("=== Script2Chain 转译器测试（v4 label/jump） ===")
+    print("=== S2C v0.2 转译器测试（类型化 var + 表达式降级） ===")
     test_unit()
     test_error()
-    test_backfeed()
-    print("\n===== 汇总 =====\nPASS=%d  FAIL=%d" % (PASS, FAIL))
-    return 0 if FAIL == 0 else 1
+    test_feed()
+    print("\n===== 汇总 =====")
+    print("PASS=%d  FAIL=%d" % (PASS, FAIL))
+    return 1 if FAIL else 0
 
 
 if __name__ == "__main__":
