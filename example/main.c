@@ -129,6 +129,11 @@ static void TestBasics(void)
     t = RunCap("echo \"x y\" z", g_cap, sizeof(g_cap));
     CHECK(strstr(g_cap, "echo x y z") != NULL, "普通式引号参数");
 
+    /* v0.3：以 '#' 开头的整句在编译期作为注释跳过 */
+    t = RunCap("# full comment;echo ok;# lead comment;echo tail", g_cap, sizeof(g_cap));
+    CHECK(CountStr(g_cap, "echo ok") == 1 && CountStr(g_cap, "echo tail") == 1,
+          "整句 # 注释被跳过");
+
     /* 编译拒绝：未知命令 / label 重名 / 未定义 / 缺目标 */
     CHECK(SCL_Run("nosuch 1") == 0u, "未知命令被编译拒绝");
     CHECK(SCL_Idle(), "编译拒绝后保持空闲");

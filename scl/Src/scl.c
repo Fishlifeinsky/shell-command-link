@@ -1346,6 +1346,11 @@ static uint8_t Scl_Compile(const char *script)
             {
                 he++;
             }
+            /* v0.3：整句注释 —— 以 '#' 开头的子句在编译期跳过（值内 '#' 不受影响） */
+            if ((hs < he) && (*hs == '#'))
+            {
+                continue;
+            }
             /* 参数原文 = head 之后，去两端空白 */
             {
                 const char *rs = he;

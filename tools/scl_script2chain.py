@@ -523,11 +523,15 @@ class Parser:
         return left
 
     def parse_cond_atom(self):
-        """原子：括号(递归整表达式) / true·false / 命令调用 / 变量 / 字面量"""
+        """原子：括号(按内容自动区分布尔组/算术)、true·false、命令调用、变量、字面量"""
         t = self.cur()
         if t.kind == "(" or t.text == "(":
-            self.next()
-            inner = self.parse_cond()
+            if self._paren_has_bool(self.p):
+                self.next()
+                inner = self.parse_cond()          # 布尔组：含 &&/||/!/比较
+            else:
+                self.next()
+                inner = self.parse_expr()          # 算术/位组：如 (i&1)、(a+b)
             self.expect(text=")", what="')'")
             return inner
         if t.kind == "ID":
@@ -557,6 +561,26 @@ class Parser:
                 return ("lit", "-" + u.text)
             raise S2CError("条件负号后需要数字", t.line, t.col)
         raise S2CError("条件无法解析 %r" % t.text, t.line, t.col)
+
+    def _paren_has_bool(self, open_pos):
+        """lookahead：'(' 内是否含布尔结构（&& || ! 或 比较符）→ 是则按布尔组解析，
+        否则按算术/位表达式（如 (i & 1) 作为比较两侧的操作数）。不移动 self.p"""
+        k = open_pos + 1
+        n = len(self.ts)
+        depth = 1
+        while k < n:
+            tk = self.ts[k]
+            if tk.kind == "(":
+                depth += 1
+            elif tk.kind == ")":
+                depth -= 1
+                if depth == 0:
+                    break
+            elif depth == 1 and (tk.kind in ("&&", "||", "!") or
+                                 tk.kind in self.CMP_OPS):
+                return True
+            k += 1
+        return False
 
     def parse_while(self):
         self.next()
@@ -716,7 +740,7 @@ class Compiler:
         self.vtypes = {}      # v0.2：变量名 → bool/int/flag/string（编译期跟踪）
         self._tmpn = 0        # v0.3：隐藏临时变量序号（__t0..）
         self._loop = []       # v0.3：循环上下文栈 {break:, continue:}（for/while 的 break/continue）
-        self._loop = []       # v0.3：循环上下文栈 {break:, continue:}（for/while 的 break/continue）
+        self._tmp_stack = []  # v0.3：当前表达式的隐藏临时变量列表（用后 free）
 
     # ---- 标签 / 引号 ----
     def new_label(self):
@@ -937,11 +961,16 @@ class Compiler:
             _, op, L, R = cond
             if op not in CMP_OPWORD:
                 raise S2CError("不支持比较符 %r" % op)
-            lt = self.cond_text(L)
-            rt = self.cond_text(R)
-            if lt is None or rt is None:
-                raise S2CError("比较两侧需为变量/字面量")
+            old = self._tmp_stack
+            self._tmp_stack = []
+            lt = self._cond_val(L, out, vs)
+            rt = self._cond_val(R, out, vs)
             out.append("%s %s %s" % (CMP_OPWORD[op], lt, rt))
+            for x in self._tmp_stack:
+                out.append("free " + x)
+                vs.discard(x)
+                self.vtypes.pop(x, None)
+            self._tmp_stack = old
             return
         if k == "not":
             x = cond[1]
@@ -997,6 +1026,16 @@ class Compiler:
         if x[0] == "bool":
             return "1" if x[1] else "0"
         return None
+
+    def _cond_val(self, node, out, vs):
+        """把条件比较两侧的节点化为可比较操作数文本：
+        变量/字面量直接用；算术/位复合式先求到隐藏临时变量 __tN（由调用方统一 free）"""
+        t = self.cond_text(node)
+        if t is not None:
+            return t
+        name = self.alloc_temp(vs)
+        self.emit_arith_to(name, node, out, vs)
+        return name
 
     # ---- if 转译（线性 label/jump） ----
     def emit_if(self, st, lines, vs, exp_stack):

@@ -119,6 +119,11 @@ def test_unit():
     unit_exact("var int n=5\nn = -n + 1",
                "var int n=5;ineg n __t0;iadd __t0 1 n;free __t0",
                "单目负 + 加法 → ineg 临时")
+    # 条件比较两侧的算术/位括号（如寄存器位判断）
+    unit_exact("var int i=3\nif ((i & 1) == 1) { echo(odd) } else { echo(even) }",
+               "var int i=3;iand i 1 __t0;ieq __t0 1;free __t0;"
+               "jump -a L1;echo even;jump L2;label L1;echo odd;label L2",
+               "if((i&1)==1) 位判断 → iand+ieq 临时")
 
 
 def unit_err(src, keyword, msg):
@@ -158,7 +163,8 @@ RUNNER_CFG = ["-DSCL_CFG_SCRIPT_MAX=2048", "-DSCL_CFG_BC_MAX=2048",
 
 def build_runner():
     (ROOT / "build").mkdir(exist_ok=True)
-    cmd = ["gcc", "-O2"] + RUNNER_CFG + [
+    # -pipe：gcc 直通汇编器，避免临时 .s 落盘（透明加密环境更稳）
+    cmd = ["gcc", "-O2", "-pipe"] + RUNNER_CFG + [
         "-I", str(ROOT / "scl" / "Inc"),
         "-I", str(ROOT / "example"),
         str(ROOT / "scl" / "Src" / "scl.c"),
@@ -241,6 +247,9 @@ def test_feed():
         ("wbrk", "var int n=0\nwhile (true) {\n  n = n + 1\n"
                  "  if (n >= 3) { break }\n  echo(\"w${n}\")\n}",
          ["echo w1", "echo w2", "RUN-OK"]),
+        ("condbit", "var int r=0xF0\nif ((r & 0x0F) == 0x00) { echo(lo) } else { echo(hi) }\n"
+                     "var int a=5\nvar int b=2\nif ((a + b) > 6) { echo(big) }",
+         ["echo lo", "echo big", "RUN-OK"]),
     ]
     for tag, src, subs in feeds:
         try:
