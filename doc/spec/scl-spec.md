@@ -1,7 +1,7 @@
 # SCL 语法与接口规格（doc/spec）
 
 > SCL = Shell-Command-Link：嵌入式友好的"指令链脚本"库。
-> 完整设计见 `doc/arc/shell-command-link-design.md`；测试报告见 `doc/other/scl-test-report.md`。
+> 完整设计见 `doc/arc/shell-command-link-design.md`；调用/执行流程见 `doc/arc/instruction-chain-flow.md`；测试报告见 `doc/other/scl-test-report.md`。
 
 ## 1. 一句话
 
