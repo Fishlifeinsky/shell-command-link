@@ -154,11 +154,13 @@ def tokenize(src):
             continue
 
         # 比较/赋值/逻辑/算术/负号（两字符合并；单字符各自成 token）
-        if ch in "=<>!-+*/%":
+        if ch in "=<>!-+*/%&|":
             two = src[i:i + 2]
-            if two in ("==", "!=", "<=", ">="):
+            if two in ("==", "!=", "<=", ">=", "&&", "||"):
                 toks.append(Tok(two, two, l0, c0))
                 adv(2)
+            elif ch in "&|":
+                raise S2CError("逻辑运算请用 && / ||（单 %r 暂不支持）" % ch, line, col)
             else:
                 toks.append(Tok(ch, ch, l0, c0))
                 adv()
@@ -429,9 +431,52 @@ class Parser:
 
     CMP_OPS = ("==", "!=", "<=", ">=", "<", ">")
 
-    def parse_cond_atom(self):
-        """条件原子：true/false、命令调用(设 G_RETURN)、变量、字面量、! 取反"""
+    def parse_cond(self):
+        """条件表达式（完整逻辑层，v0.3）：or → and → not → 比较 → 原子/括号"""
+        return self.parse_cond_or()
+
+    def parse_cond_or(self):
+        left = self.parse_cond_and()
+        while self.at("||", text="||"):
+            self.next()
+            right = self.parse_cond_and()
+            left = ("or", left, right)
+        return left
+
+    def parse_cond_and(self):
+        left = self.parse_cond_not()
+        while self.at("&&", text="&&"):
+            self.next()
+            right = self.parse_cond_not()
+            left = ("and", left, right)
+        return left
+
+    def parse_cond_not(self):
+        if self.at("!", text="!"):
+            self.next()
+            inner = self.parse_cond_not()
+            return ("not", inner)
+        return self.parse_cond_cmp()
+
+    def parse_cond_cmp(self):
+        left = self.parse_cond_atom()
         t = self.cur()
+        if t.kind in self.CMP_OPS:
+            op = self.next().text
+            right = self.parse_cond_atom()
+            if left[0] == "call" or right[0] == "call":
+                raise S2CError("比较两侧不能是命令调用", t.line, t.col)
+            return ("cmp", op, left, right)
+        return left
+
+    def parse_cond_atom(self):
+        """原子：括号(递归整表达式) / true·false / 命令调用 / 变量 / 字面量"""
+        t = self.cur()
+        if t.kind == "(" or t.text == "(":
+            self.next()
+            inner = self.parse_cond()
+            self.expect(text=")", what="')'")
+            return inner
         if t.kind == "ID":
             if t.text == "true":
                 self.next()
@@ -447,7 +492,7 @@ class Parser:
                 self.next()
                 args = self.parse_args_after_open()
                 return ("call", name, args)
-            return ("var", name)      # 变量真值 → btest
+            return ("var", name)
         if t.kind == "NUM":
             self.next()
             return ("lit", t.text)
@@ -458,26 +503,7 @@ class Parser:
                 self.next()
                 return ("lit", "-" + u.text)
             raise S2CError("条件负号后需要数字", t.line, t.col)
-        if t.text == "!":
-            self.next()
-            inner = self.parse_cond_atom()
-            if inner[0] == "call":
-                raise S2CError("'!' 后暂不支持命令调用（对 G_RETURN 取反留 v0.3）",
-                               t.line, t.col)
-            return ("not", inner)
         raise S2CError("条件无法解析 %r" % t.text, t.line, t.col)
-
-    def parse_cond(self):
-        """条件：原子，或 原子 比较运算符 原子（a<b / a==b / ...）"""
-        left = self.parse_cond_atom()
-        t = self.cur()
-        if t.kind in self.CMP_OPS:
-            op = self.next().text
-            right = self.parse_cond_atom()
-            if left[0] == "call" or right[0] == "call":
-                raise S2CError("比较两侧不能是命令调用", t.line, t.col)
-            return ("cmp", op, left, right)
-        return left
 
     def parse_while(self):
         self.next()
@@ -726,7 +752,7 @@ class Compiler:
             return "1" if v else "0"
         return None
 
-    # ---- 条件 → 一组会产生 G_RETURN 的代码行（v0.2 支持表达式降级） ----
+    # ---- 条件 → 一组会产生 G_RETURN 的代码行（v0.3 支持 && || ! 括号短路） ----
     def emit_cond(self, cond, out, vs, exp_stack):
         k = cond[0]
         if k == "bool":
@@ -747,16 +773,6 @@ class Compiler:
         if k == "lit":
             out.append("btest " + cond[1])     # 字面量真值 → G_RETURN
             return
-        if k == "not":
-            x = cond[1]
-            if x[0] == "bool":
-                out.append(self.emit_call(self.ret_setter, ["0" if x[1] else "1"]))
-                return
-            tx = self.cond_text(x)
-            if tx is None:
-                raise S2CError("! 目标无法取反（%r）" % (x,))
-            out.append("bnot " + tx)
-            return
         if k == "cmp":
             _, op, L, R = cond
             if op not in CMP_OPWORD:
@@ -766,6 +782,50 @@ class Compiler:
             if lt is None or rt is None:
                 raise S2CError("比较两侧需为变量/字面量")
             out.append("%s %s %s" % (CMP_OPWORD[op], lt, rt))
+            return
+        if k == "not":
+            x = cond[1]
+            if x[0] == "bool":
+                out.append(self.emit_call(self.ret_setter, ["0" if x[1] else "1"]))
+                return
+            tx = self.cond_text(x)
+            if tx is not None:      # 原子（变量/字面量）→ 直接 bnot，最短
+                out.append("bnot " + tx)
+                return
+            # 复合子式：先求 x → G_RETURN，再用跳转反转
+            self.emit_cond(x, out, vs, exp_stack)
+            l1 = self.new_label()
+            l2 = self.new_label()
+            out.append("jump -a " + l1)                      # x 真 → L1
+            out.append(self.emit_call(self.ret_setter, ["1"]))  # x 假 → not=1
+            out.append("jump " + l2)
+            out.append("label " + l1)
+            out.append(self.emit_call(self.ret_setter, ["0"]))  # x 真 → not=0
+            out.append("label " + l2)
+            return
+        if k == "and":
+            a, b = cond[1], cond[2]
+            l1 = self.new_label()
+            l2 = self.new_label()
+            self.emit_cond(a, out, vs, exp_stack)            # G_RETURN=a
+            out.append("jump -a " + l1)                      # a 真 → 求 b
+            out.append(self.emit_call(self.ret_setter, ["0"]))  # a 假 → 0
+            out.append("jump " + l2)
+            out.append("label " + l1)
+            self.emit_cond(b, out, vs, exp_stack)            # 结果 = b
+            out.append("label " + l2)
+            return
+        if k == "or":
+            a, b = cond[1], cond[2]
+            l1 = self.new_label()
+            l2 = self.new_label()
+            self.emit_cond(a, out, vs, exp_stack)            # G_RETURN=a
+            out.append("jump -a " + l1)                      # a 真 → 短路真
+            self.emit_cond(b, out, vs, exp_stack)            # a 假 → 结果=b
+            out.append("jump " + l2)
+            out.append("label " + l1)
+            out.append(self.emit_call(self.ret_setter, ["1"]))  # 真短路
+            out.append("label " + l2)
             return
         raise S2CError("未知条件节点 %r" % (k,))
 
@@ -899,6 +959,8 @@ class Compiler:
             return cond
         if k == "not":
             return ("not", cls.clone_cond(cond[1], sub))
+        if k in ("and", "or"):
+            return (k, cls.clone_cond(cond[1], sub), cls.clone_cond(cond[2], sub))
         if k == "cmp":
             _, op, L, R = cond
             return ("cmp", op, cls.clone_cond(L, sub), cls.clone_cond(R, sub))

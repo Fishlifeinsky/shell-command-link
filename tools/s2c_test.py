@@ -70,6 +70,15 @@ def test_unit():
     unit_exact("var bool b=false\nif (!b) { echo(yes) }",
                "var bool b=false;bnot b;jump -a L1;jump L2;label L1;echo yes;label L2",
                "if(!bool变量) → bnot")
+    # v0.3：&& || 短路（结果仍回 G_RETURN，供外层 if 的 jump -a）
+    unit_exact("var bool p=true\nvar bool q=false\nif (p && q) { echo(A) } else { echo(B) }",
+               "var bool p=true;var bool q=false;btest p;jump -a L1;setret 0;jump L2;"
+               "label L1;btest q;label L2;jump -a L3;echo B;jump L4;label L3;echo A;label L4",
+               "if(&&) else → 短路 and")
+    unit_exact("var bool p=true\nvar bool q=false\nif (p || q) { echo(A) } else { echo(B) }",
+               "var bool p=true;var bool q=false;btest p;jump -a L1;btest q;jump L2;"
+               "label L1;setret 1;label L2;jump -a L3;echo B;jump L4;label L3;echo A;label L4",
+               "if(||) else → 短路 or")
 
     # do-while + 算术赋值
     unit_exact("var int n=0\nwhile (n < 3) { n = n + 1 }",
@@ -122,9 +131,7 @@ def test_error():
     unit_err("add(1,2", "')'", "缺右括号报错")
     unit_err("x 3", "需要 '('", "裸标识符语句报错")
     unit_err("var if = 1", "保留", "变量名用保留字报错")
-    unit_err("if (a && b) { echo(x) }", "无法识别", "&& 未支持(v0.3) 报错")
-    unit_err("var int n=1\nwhile (n < 3 && n > 0) { }", "无法识别",
-             "while 复合条件未支持 报错")
+    unit_err("if (a & b) { echo(x) }", "&&", "单 & 提示用 &&")
     unit_err("var int x=1\nx = x + 1 + 2", "多运算符", "多运算符算术 v0.3 报错")
     unit_err("y = 3", "需先用 var", "赋值未声明目标报错")
     unit_err("echo(\"a\" + \"b\")", "不允许", "实参中算术/比较未支持")
@@ -211,6 +218,12 @@ def test_feed():
          ["echo small", "RUN-OK"]),
         ("boolif", "var bool ok=true\nif (!ok) { echo(bad) }\nif (ok) { echo(good) }",
          ["echo good", "RUN-OK"]),
+        ("logic", "var bool p=true\nvar bool q=false\n"
+                   "if ((p && q) || !q) { echo(Y) } else { echo(N) }",
+         ["echo Y", "RUN-OK"]),
+        ("wlogic", "var int n=0\nvar bool run=true\n"
+                    "while (run && n < 2) { n = n + 1; echo(\"n=${n}\") }",
+         ["echo n=1", "echo n=2", "RUN-OK"]),
     ]
     for tag, src, subs in feeds:
         try:
