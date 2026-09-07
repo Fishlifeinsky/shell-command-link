@@ -62,6 +62,11 @@ def test_unit():
     unit_exact("var a = 0x1F", "var int a=0x1F", "var 无类型推断 int(hex)")
     unit_exact("var b = 0b101", "var int b=0b101", "var 无类型推断 int(0b)")
 
+    # const 顶层只读常量（v0.3：→ 链 var const ...）
+    unit_exact("const int LIMIT=10", "var const int LIMIT=10", "const 显式类型顶层")
+    unit_exact("const LIMIT=10", "var const int LIMIT=10", "const 推断类型 int")
+    unit_exact("const DBG=true", "var const bool DBG=true", "const 推断类型 bool")
+
     # 原子条件：比较 → 运算指令；bool/变量 → btest
     unit_exact("if (mode == 1) { echo(a) } else { echo(b) }",
                "ieq mode 1;jump -a L1;echo b;jump L2;label L1;echo a;label L2",
@@ -145,6 +150,7 @@ def test_error():
     unit_err("var int toolongname=1", "过长", "变量名 >8 报错")
     unit_err("var int x=1234567890123456", "过长", "变量字面值 >15 报错")
     unit_err("fn a(){ a() }\na()", "递归", "fn 递归报错")
+    unit_err("if(true){ const int a=1 }", "仅允许顶层", "const 不允许在块内")
     unit_err('echo("unclosed', "未闭合", "字符串未闭合报错")
     unit_err("add(1,2", "')'", "缺右括号报错")
     unit_err("x 3", "需要 '('", "裸标识符语句报错")
@@ -308,6 +314,21 @@ def test_emitc():
     if not ok:
         return
 
+    # v0.3：const 顶层只读常量回喂
+    cases = [
+        ("constst", None,
+         "const int LIM=5\nvar int r=0\nr = LIM + 1\necho(\"r=${r} L=${LIM}\")",
+         ["echo r=6 L=5", "RUN-OK"]),
+    ]
+    for tag, _p, src, subs in cases:
+        try:
+            chain, _ = ec.translate(src)
+            bc, argc = ec.encode_chain(chain)
+            progs.append((tag, ec.emit_c(tag, bc, argc, tag), subs))
+        except Exception as e:  # noqa: BLE001
+            check(False, "emit-c %s 生成失败: %s" % (tag, e))
+            ok = False
+
     (ROOT / "build" / "_emitc_progs.c").write_text(
         "\n".join(p[1] for p in progs), encoding="utf-8")
     (ROOT / "build" / "_emitc_main.c").write_text(
@@ -411,6 +432,8 @@ def test_feed():
          ["echo N", "echo now", "RUN-OK"]),
         ("flagst", "var flag f=-x\nif (f == \"-x\") { echo(has) } else { echo(no) }",
          ["echo has", "RUN-OK"]),
+        ("constst", "const int LIM=5\nvar int r=0\nr = LIM + 1\necho(\"r=${r} L=${LIM}\")",
+         ["echo r=6 L=5", "RUN-OK"]),
     ]
     for tag, src, subs in feeds:
         try:

@@ -27,6 +27,7 @@ typedef struct
     uint8_t  type;                        /* SCL_T_BOOL/INT/FLAG/STR */
     char     value[SCL_CFG_VAR_VALUE_MAX]; /* 规范化文本 */
     uint8_t  used;
+    uint8_t  ro;                          /* 1=只读常量（const）：不可覆盖/free/作为写回目标 */
 } scl_var_t;
 
 /* ========================== 共享状态（各模块定义） ========================== */

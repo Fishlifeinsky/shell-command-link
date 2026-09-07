@@ -128,12 +128,14 @@ int Scl_VarNorm(uint8_t type, const char *val, char *out, uint16_t cap)
     return 0;
 }
 
-/* 类型化写入核心（脚本 'var' 与 C 命令共用） */
-static int Scl_VarSetCore(const char *name, uint8_t type, const char *val)
+/* 类型化写入核心（脚本 'var' 与 C 命令共用）。ro=1 建立只读常量：
+   已有常量不可被任何覆盖（返回 -5）；普通变量可被覆盖为常量或普通。 */
+static int Scl_VarSetCoreEx(const char *name, uint8_t type, const char *val, uint8_t ro)
 {
     char norm[SCL_CFG_VAR_VALUE_MAX];
     int  idx;
     int  r;
+    uint16_t i;
 
     if ((name == NULL) || (name[0] == '\0'))
     {
@@ -151,7 +153,6 @@ static int Scl_VarSetCore(const char *name, uint8_t type, const char *val)
     idx = Scl_VarFind(name);
     if (idx < 0)
     {
-        uint16_t i;
         for (idx = 0; idx < (int)SCL_CFG_VAR_MAX; idx++)
         {
             if (s_vars[idx].used == 0u)
@@ -164,22 +165,34 @@ static int Scl_VarSetCore(const char *name, uint8_t type, const char *val)
             return -1;   /* 满 */
         }
         s_vars[idx].used = 1u;
+        s_vars[idx].ro   = ro;
         for (i = 0u; name[i] != '\0'; i++)
         {
             s_vars[idx].name[i] = name[i];
         }
         s_vars[idx].name[i] = '\0';
     }
-    s_vars[idx].type = type;
+    else if (s_vars[idx].ro != 0u)
     {
-        uint16_t i;
-        for (i = 0u; norm[i] != '\0'; i++)
-        {
-            s_vars[idx].value[i] = norm[i];
-        }
-        s_vars[idx].value[i] = '\0';
+        return -5;   /* 只读常量不可覆盖 */
     }
+    else
+    {
+        s_vars[idx].ro = ro;   /* 普通变量可升级为 const */
+    }
+    s_vars[idx].type = type;
+    for (i = 0u; norm[i] != '\0'; i++)
+    {
+        s_vars[idx].value[i] = norm[i];
+    }
+    s_vars[idx].value[i] = '\0';
     return 0;
+}
+
+/* 普通写入（可变变量） */
+static int Scl_VarSetCore(const char *name, uint8_t type, const char *val)
+{
+    return Scl_VarSetCoreEx(name, type, val, 0u);
 }
 
 /* 自动推断类型设置（C 命令便捷用） */
@@ -193,6 +206,19 @@ int SCL_VarSet(const char *name, const char *val)
 int SCL_VarSetT(const char *name, uint8_t type, const char *val)
 {
     return Scl_VarSetCore(name, type, val);
+}
+
+/* 显式类型建立只读常量（一经建立不可覆盖/释放，生命周期同会话变量） */
+int SCL_VarSetConst(const char *name, uint8_t type, const char *val)
+{
+    return Scl_VarSetCoreEx(name, type, val, 1u);
+}
+
+/* 查询是否为只读常量（会话变量表） */
+int SCL_VarIsConst(const char *name)
+{
+    int idx = Scl_VarFind(name);
+    return ((idx >= 0) && (s_vars[idx].ro != 0u)) ? 1 : 0;
 }
 
 uint8_t SCL_VarType(const char *name)
@@ -214,8 +240,13 @@ int SCL_VarFree(const char *name)
     {
         return -1;
     }
+    if (s_vars[idx].ro != 0u)
+    {
+        return -2;   /* 只读常量不可释放 */
+    }
     s_vars[idx].used = 0u;
     s_vars[idx].type = 0u;
+    s_vars[idx].ro   = 0u;
     s_vars[idx].name[0] = '\0';
     s_vars[idx].value[0] = '\0';
     return 0;
@@ -231,6 +262,7 @@ int SCL_VarFreeAll(void)
         {
             s_vars[i].used = 0u;
             s_vars[i].type = 0u;
+            s_vars[i].ro   = 0u;
             s_vars[i].name[0] = '\0';
             s_vars[i].value[0] = '\0';
             n++;

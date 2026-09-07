@@ -6,6 +6,8 @@
 
 - **多类型变量**：`var <type> x=val`，type ∈ `bool`/`int`/`flag`/`string`
   （默认 4 槽 / 名 ≤8 / 值 16B，全部可裁剪）
+- **const 只读常量**：`var const <type> x=val`（现代源写 `const [type] x=val`）——
+  声明后不可覆盖/释放/作写回目标；`SCL_VarSetConst/IsConst`；列表带 `const` 标记
 - **类型化参数字节缓存**：命令参数入缓存即解析成 type 块（bool/int/flag/string），
   type 开头、无空格分隔；命令可用 `SCL_ArgType()` 区分参数类型
 - 命令实参内 `${x}` 取值（支持拼接）；C 命令可用 `SCL_VarGet()/VarSet()/VarSetT()/VarType()`
@@ -46,6 +48,7 @@
 | `doc/arc/scl-shell-sim.md` | **v0.3**：交互 Shell + MCU 串口模拟 + VarKeep |
 | `doc/arc/scl-env-buffer.md` | **v0.3**：环境变量缓冲（默认装载/固化/恢复） |
 | `doc/arc/scl-cmddesc.md` | **v0.3**：多模块源码 + 命令描述注册辅助（argtable3 风格） |
+| `doc/arc/scl-const.md` | **v0.3**：const 只读常量（链式/C API/现代源） |
 | `doc/other/scl-config-profiles.md` | **v0.3**：配置裁剪档模板（min/平衡/full + 内存预算） |
 | `doc/spec/scl-spec.md` | 语法/API/移植/裁剪规格 + 集成示例 |
 | `doc/other/scl-test-report.md` | 全量测试报告（大小/速度/可靠性/重复性/复杂度） |

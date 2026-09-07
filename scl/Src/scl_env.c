@@ -58,6 +58,7 @@ static int Scl_EnvSetCore(const char *name, uint8_t type, const char *val)
             return -1;
         }
         s_env[idx].used = 1u;
+        s_env[idx].ro   = 0u;
         for (i = 0u; name[i] != '\0'; i++)
         {
             s_env[idx].name[i] = name[i];
@@ -114,6 +115,7 @@ int Scl_Env_FreeAll(void)
         {
             s_env[i].used = 0u;
             s_env[i].type = 0u;
+            s_env[i].ro   = 0u;
             s_env[i].name[0] = '\0';
             s_env[i].value[0] = '\0';
             n++;

@@ -1546,7 +1546,9 @@ static void Scl_VarList(void)
     {
         if (s_vars[i].used != 0u)
         {
-            Scl_Msg("  %s : %s = %s\r\n", s_vars[i].name,
+            Scl_Msg("  %s%s : %s = %s\r\n",
+                    (s_vars[i].ro != 0u) ? "const " : "",
+                    s_vars[i].name,
                     Scl_TypeName(s_vars[i].type), s_vars[i].value);
         }
     }
@@ -1563,6 +1565,7 @@ static void Scl_DoVarRaw(const char *raw)
 {
     const char *p;
     uint8_t typ;
+    uint8_t isc = 0u;   /* 前缀 const（只读常量） */
 
     if (raw == NULL)
     {
@@ -1580,13 +1583,22 @@ static void Scl_DoVarRaw(const char *raw)
         return;
     }
 
-    /* 首 token */
+    /* 首 token（可选 const 前缀）：var const <type> <name>=<value> */
     p = raw;
     while (Scl_IsSp(*p)) { p++; }
     {
         const char *tb = p;
         const char *te = p;
         while ((*te != '\0') && !Scl_IsSp(*te)) { te++; }
+        isc = ((uint16_t)(te - tb) == 5u) && Scl_EqN(tb, "const", 5u);
+        if (isc != 0u)
+        {
+            p = te;
+            while (Scl_IsSp(*p)) { p++; }
+            tb = p;
+            te = p;
+            while ((*te != '\0') && !Scl_IsSp(*te)) { te++; }
+        }
         typ = Scl_TypeOfName(tb, (uint16_t)(te - tb));
     }
 
@@ -1650,15 +1662,27 @@ static void Scl_DoVarRaw(const char *raw)
                 return;
             }
         }
-        r = SCL_VarSetT(namebuf, typ, valbuf);
+        if (isc != 0u)
+        {
+            r = SCL_VarSetConst(namebuf, typ, valbuf);
+        }
+        else
+        {
+            r = SCL_VarSetT(namebuf, typ, valbuf);
+        }
         if (r == 0)
         {
-            Scl_Msg("scl: var %s : %s = %s (剩余空位 %d)\r\n",
+            Scl_Msg("scl: var %s%s : %s = %s (剩余空位 %d)\r\n",
+                    (isc != 0u) ? "const " : "",
                     namebuf, Scl_TypeName(typ), valbuf, SCL_VarFreeCount());
         }
         else if (r == -1)
         {
             Scl_MsgErr("var: 变量已满(%d 个)", (int)SCL_CFG_VAR_MAX);
+        }
+        else if (r == -5)
+        {
+            Scl_MsgErr("var: '%s' 是 const 常量，不可覆盖", namebuf);
         }
         else
         {
@@ -1701,9 +1725,14 @@ static void Scl_DoFreeRaw(const char *raw)
     }
     else
     {
-        if (SCL_VarFree(raw) == 0)
+        int fr = SCL_VarFree(raw);
+        if (fr == 0)
         {
             Scl_Msg("scl: free %s（剩余空位 %d）\r\n", raw, SCL_VarFreeCount());
+        }
+        else if (fr == -2)
+        {
+            Scl_MsgErr("free: '%s' 是 const 常量，不可释放", raw);
         }
         else
         {
@@ -1828,7 +1857,14 @@ static void Scl_DoArith(uint16_t opc, int argc, char *argv[])
     if (Scl_FmtI32(r, nb, (uint16_t)sizeof(nb)) == 0u) { Scl_MsgErr("算术: 结果溢出"); return; }
     if (SCL_VarSetT(dst, SCL_T_INT, nb) != 0)
     {
-        Scl_MsgErr("算术: 目标变量 '%s' 无效或已满", dst);
+        if (SCL_VarIsConst(dst) != 0)
+        {
+            Scl_MsgErr("算术: 目标常量 '%s' 只读，不可写回", dst);
+        }
+        else
+        {
+            Scl_MsgErr("算术: 目标变量 '%s' 无效或已满", dst);
+        }
     }
 }
 

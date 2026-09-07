@@ -29,7 +29,7 @@ import argparse
 # ============================ 保留字 ============================
 
 RESERVED_CMD = {"if", "while", "var", "free", "help", "label", "jump"}  # 运行时/关键字
-SYNTAX_WORDS = {"else", "fn", "ret", "true", "false"}                    # 语法字
+SYNTAX_WORDS = {"else", "fn", "ret", "true", "false", "const"}              # 语法字
 
 
 # ============================ 错误 ============================
@@ -260,6 +260,10 @@ class Parser:
 
         if kw == "var":
             return self.parse_var()
+        if kw == "const":
+            if not top:
+                raise S2CError("const 常量声明仅允许顶层", t.line, t.col)
+            return self.parse_var(is_const=True)
         if kw == "free":
             return self.parse_free()
         if kw == "if":
@@ -313,9 +317,10 @@ class Parser:
             raise S2CError("命令 %r 后需要 '('（如 %s(...)）" % (kw, kw), t.line, t.col)
         return ("call", kw, args)
 
-    def parse_var(self):
-        # 支持 'var <type> <name>=<value>'（type ∈ bool/int/flag/string，可省略→自动推断）
-        self.next()   # 消费 var
+    def parse_var(self, is_const=False):
+        # 支持 'var <type> <name>=<value>' 或顶层 'const <type> <name>=<value>'
+        # （type ∈ bool/int/flag/string，可省略→自动推断）
+        self.next()   # 消费 var / const
         t = self.cur()
         typ = None
         if t.kind == "ID" and t.text in ("bool", "int", "flag", "string"):
@@ -332,6 +337,8 @@ class Parser:
         self.expect(text="=", what="'='")
         self.skip_nl()
         value = self.gather_value()
+        if is_const:
+            return ("constvar", name_tok.text, typ, value)
         return ("var", name_tok.text, typ, value)
 
     def gather_value(self):
@@ -801,6 +808,8 @@ class Compiler:
             lines.append(self.emit_call(name, args))
         elif k == "var":
             lines.append(self.emit_var(st[1], st[2], st[3], vs))
+        elif k == "constvar":
+            lines.append(self.emit_var(st[1], st[2], st[3], vs, is_const=True))
         elif k == "free":
             lines.append(self.emit_free(st[1], vs))
         elif k == "ret_set":
@@ -823,7 +832,7 @@ class Compiler:
         else:
             raise S2CError("未知 AST 节点 %r" % (k,))
 
-    def emit_var(self, name, typ, value, vs):
+    def emit_var(self, name, typ, value, vs, is_const=False):
         if len(name) > self.name_max:
             raise S2CError("变量名 %r 过长（>%d）" % (name, self.name_max))
         if name in RESERVED_CMD or name in SYNTAX_WORDS:
@@ -836,7 +845,8 @@ class Compiler:
         if typ is None:
             typ = infer_var_type(value)   # v0.2：现代层允许省略类型（编译器推断）
         self.vtypes[name] = typ
-        return "var %s %s=%s" % (typ, name, self.quote_lit(value))
+        return ("var const " if is_const else "var ") + \
+               "%s %s=%s" % (typ, name, self.quote_lit(value))
 
     def emit_free(self, name, vs):
         if name is not None:

@@ -735,6 +735,79 @@ static void TestCmdDesc(void)
 
 #endif /* SCL_CFG_CMDDESC_EN */
 
+/* ---- 10. const 只读常量 ---- */
+
+static void TestConst(void)
+{
+    char buf[400];
+
+    Section("10. const 只读常量");
+    SCL_VarFreeAll();
+
+    /* 链式声明 + var 列表显示 const */
+    {
+        Scl_CapBegin(buf, sizeof(buf));
+        RunToIdle("var const int LIMIT=10;var");
+        Scl_CapEnd();
+        CHECK(strstr(buf, "const LIMIT : int = 10") != NULL,
+              "var const 声明 + 列表带 const 标记");
+    }
+
+    /* const 可读、参与比较/展开 */
+    {
+        Scl_CapBegin(buf, sizeof(buf));
+        RunToIdle("var const int LIMIT=10;echo L=${LIMIT}");
+        Scl_CapEnd();
+        CHECK(strstr(buf, "echo L=10") != NULL, "const 可被 ${} 读取");
+    }
+
+    /* 覆盖 const → 拒绝且保留原值 */
+    {
+        Scl_CapBegin(buf, sizeof(buf));
+        RunToIdle("var const int LIMIT=10;var int LIMIT=5;echo after=${LIMIT}");
+        Scl_CapEnd();
+        CHECK(strstr(buf, "不可覆盖") != NULL && strstr(buf, "echo after=10") != NULL,
+              "覆盖 const 被拒并保留原值");
+    }
+
+    /* 算术写回 const → 拒绝 */
+    {
+        Scl_CapBegin(buf, sizeof(buf));
+        RunToIdle("var const int LIMIT=10;iadd LIMIT 1 LIMIT;echo k");
+        Scl_CapEnd();
+        CHECK(strstr(buf, "目标常量") != NULL && strstr(buf, "echo k") != NULL,
+              "const 不可作算术写回目标");
+    }
+
+    /* free const → 拒绝 */
+    {
+        Scl_CapBegin(buf, sizeof(buf));
+        RunToIdle("var const int LIMIT=10;free LIMIT;echo f");
+        Scl_CapEnd();
+        CHECK(strstr(buf, "不可释放") != NULL && strstr(buf, "echo f") != NULL,
+              "free const 被拒");
+    }
+
+    /* 普通变量可升级为 const，随后即锁定 */
+    {
+        Scl_CapBegin(buf, sizeof(buf));
+        RunToIdle("var int v=1;var const int v=9;var int v=0;echo v=${v}");
+        Scl_CapEnd();
+        CHECK(strstr(buf, "不可覆盖") != NULL && strstr(buf, "echo v=9") != NULL,
+              "普通→const 升级后锁定");
+    }
+
+    /* C API：SetConst/IsConst/覆盖-5/free-2/FreeAll 清理 */
+    {
+        CHECK(SCL_VarSetConst("TAU", SCL_T_INT, "314") == 0, "C API 建立 const");
+        CHECK(SCL_VarIsConst("TAU") == 1, "IsConst 为真");
+        CHECK(SCL_VarSetT("TAU", SCL_T_INT, "1") == -5, "C 覆盖 const 返回 -5");
+        CHECK(SCL_VarFree("TAU") == -2, "C free const 返回 -2");
+        CHECK(SCL_VarFreeAll() >= 1 && SCL_VarIsConst("TAU") == 0,
+              "会话清理(FreeAll)可释放 const");
+    }
+}
+
 int main(void)
 {
     setvbuf(stdout, NULL, _IONBF, 0);
@@ -764,6 +837,7 @@ int main(void)
 #if (SCL_CFG_CMDDESC_EN == 1u)
     TestCmdDesc();
 #endif
+    TestConst();
 
     printf("\n===== 汇总 =====\n");
     printf("PASS=%d  FAIL=%d\n", g_pass, g_fail);

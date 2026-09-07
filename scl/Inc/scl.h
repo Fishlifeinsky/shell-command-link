@@ -283,9 +283,25 @@ int SCL_VarSet(const char *name, const char *val);
   * @param  type SCL_T_BOOL/SCL_T_INT/SCL_T_FLAG/SCL_T_STR
   * @param  val  值（按 type 校验并规范化：bool 接受 true/false/1/0；int 接受十进制；
   *              flag 接受 "-x"；string 接受任意文本）
-  * @retval 0=成功；-1=变量已满无空槽；-2=变量名非法/过长；-3=值过长/非法；-4=变量名为空
+  * @retval 0=成功；-1=变量已满无空槽；-2=变量名非法/过长；-3=值过长/非法；-4=变量名为空；
+  *         -5=同名已存在且为只读常量（const）
   */
 int SCL_VarSetT(const char *name, uint8_t type, const char *val);
+
+/**
+  * @brief  建立只读常量（const）：声明后不可覆盖/free/作为写回目标
+  * @param  name 变量名；type 同 SCL_VarSetT；val 值（校验/规范化）
+  * @retval 同 SCL_VarSetT（-5=已是 const 常量不可再覆盖）
+  * @note   生命周期与会话变量一致（脚本结束按 VarKeep 语义释放）
+  */
+int SCL_VarSetConst(const char *name, uint8_t type, const char *val);
+
+/**
+  * @brief  查询某变量是否为只读常量（const）
+  * @param  name 变量名
+  * @retval 1=是常量；0=否/不存在
+  */
+int SCL_VarIsConst(const char *name);
 
 /**
   * @brief  释放指定变量（不存在则无操作）
