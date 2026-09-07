@@ -39,13 +39,32 @@ extern "C" {
 #define SCL_CFG_VAR_VALUE_MAX    16u
 #endif
 
-/* ============================ 脚本/程序缓冲 ============================ */
+/* ============================ 文本 / 字节码 / 参数缓存 ============================ */
 
-/* 内部程序文本缓冲字节数（含结尾 '\0'）：异步跨主循环步进需要，
-   SCL_Run() 会把整条脚本拷贝进来，调用方缓冲可即刻复用。
-   单条脚本超过该值将被拒绝。 */
+/* 单条指令链文本的最大长度（含结尾 '\0'）：SCL_Run() 读取并编译，
+   超长拒绝。文本不长期驻留（编译成字节码后即丢弃）。 */
 #ifndef SCL_CFG_SCRIPT_MAX
-#define SCL_CFG_SCRIPT_MAX       256u
+#define SCL_CFG_SCRIPT_MAX       512u
+#endif
+
+/* 字节码缓冲字节数：每条指令固定 4 字节(opc2 + argOff2)，最多 BC_MAX/4 条 */
+#ifndef SCL_CFG_BC_MAX
+#define SCL_CFG_BC_MAX           512u
+#endif
+
+/* 参数字节缓存：每条带参指令存 [len(1)][参数原文...]；argOff 指向其起点 */
+#ifndef SCL_CFG_ARG_CACHE_MAX
+#define SCL_CFG_ARG_CACHE_MAX    256u
+#endif
+
+/* label 表容量（label 指令不产字节，只登记名字→字节偏移） */
+#ifndef SCL_CFG_LABEL_MAX
+#define SCL_CFG_LABEL_MAX        16u
+#endif
+
+/* label 名最大长度（不含结尾 '\0'） */
+#ifndef SCL_CFG_LABEL_NAME_MAX
+#define SCL_CFG_LABEL_NAME_MAX   16u
 #endif
 
 /* ============================ 命令参数 ============================ */
@@ -62,18 +81,6 @@ extern "C" {
 
 /* 命令参数工作缓冲总字节数（内部推导，勿改） */
 #define SCL_CFG_ARG_BUF_BYTES    ((SCL_CFG_ARG_MAX) * (SCL_CFG_ARG_LEN_MAX))
-
-/* ============================ 流程控制 ============================ */
-
-/* 执行帧栈深度上限（if 分支子链 / while 嵌套 共用，含 while 与段帧） */
-#ifndef SCL_CFG_NEST_MAX
-#define SCL_CFG_NEST_MAX         3u
-#endif
-
-/* while 总迭代兜底保护：G_RETURN 一直为真且未显式给上限时，达到此值强制退出防死循环 */
-#ifndef SCL_CFG_WHILE_MAX
-#define SCL_CFG_WHILE_MAX        100000u
-#endif
 
 /* ============================ 输出 ============================ */
 

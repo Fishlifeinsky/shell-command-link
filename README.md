@@ -9,7 +9,8 @@
 - `free` 释放 / `var` 查剩余空位；**脚本跑完自动全释放**
 - 全局条件标志 `G_RETURN`：命令写、`if`/`while` 读（**读后自动清零**）
 - 普通调用 `cmd a b`（空白分隔；含空格的参数用引号包裹为整体）
-- `if -t "A" -f "B"`、`while -b; ...; while -e [N]`，支持互相嵌套
+- **汇编式控制流**：`label 名` 设跳转点；`jump [-a] 名`（-a=G_RETURN 真跳）
+- **文本→字节码**：指令固定 4 字节（opc + 参数偏移），命令注册自动分配 opcode
 - **异步/跨主循环步进**：命令可带同步信号回调，适配"命令耗时等待硬件"
 - 一条 `SCL_Run` + 主循环周期调 `SCL_Loop()` 即可驱动
 
@@ -44,7 +45,8 @@ static scl_cmd_t s_cmd_step = { "step", Cmd_Step, NULL, NULL };
 
 int main(void) {
     SCL_RegisterCmd(&s_cmd_step);
-    SCL_Run("var sp=100; while -b; step ${sp}; setret 1; while -e 3");
+    /* label/jump 汇编式（do-while 范式）：step 完成后置 G_RETURN=false 即退出 */
+    SCL_Run("var sp=100; label L1; step ${sp} 1; setret 0; jump -a L1");
     for (;;) { SCL_Loop(); }   /* 主循环推进 */
 }
 ```

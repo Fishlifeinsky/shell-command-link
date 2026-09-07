@@ -60,14 +60,14 @@ static void Cmd_demo_inc(int argc, char *argv[]);
 static void Cmd_wait(int argc, char *argv[]);
 static bool Sync_wait(bool clear);
 
-static scl_cmd_t s_cmd_echo       = { "echo",       Cmd_echo,       NULL, NULL };
-static scl_cmd_t s_cmd_setret     = { "setret",     Cmd_setret,     NULL, NULL };
-static scl_cmd_t s_cmd_cmp        = { "cmp",        Cmd_cmp,        NULL, NULL };
-static scl_cmd_t s_cmd_add        = { "add",        Cmd_add,        NULL, NULL };
-static scl_cmd_t s_cmd_noop       = { "noop",       Cmd_noop,       NULL, NULL };
-static scl_cmd_t s_cmd_demo_reset = { "demo_reset", Cmd_demo_reset, NULL, NULL };
-static scl_cmd_t s_cmd_demo_inc   = { "demo_inc",   Cmd_demo_inc,   NULL, NULL };
-static scl_cmd_t s_cmd_wait       = { "wait",       Cmd_wait,       Sync_wait, NULL };
+static scl_cmd_t s_cmd_echo       = { "echo",       Cmd_echo,       NULL, NULL, 0 };
+static scl_cmd_t s_cmd_setret     = { "setret",     Cmd_setret,     NULL, NULL, 0 };
+static scl_cmd_t s_cmd_cmp        = { "cmp",        Cmd_cmp,        NULL, NULL, 0 };
+static scl_cmd_t s_cmd_add        = { "add",        Cmd_add,        NULL, NULL, 0 };
+static scl_cmd_t s_cmd_noop       = { "noop",       Cmd_noop,       NULL, NULL, 0 };
+static scl_cmd_t s_cmd_demo_reset = { "demo_reset", Cmd_demo_reset, NULL, NULL, 0 };
+static scl_cmd_t s_cmd_demo_inc   = { "demo_inc",   Cmd_demo_inc,   NULL, NULL, 0 };
+static scl_cmd_t s_cmd_wait       = { "wait",       Cmd_wait,       Sync_wait, NULL, 0 };
 
 /* ========================== 演示命令状态 ========================== */
 

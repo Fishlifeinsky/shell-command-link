@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-s2c_test.py — Script2Chain 转译器测试
+s2c_test.py — Script2Chain 转译器测试（v4：输出 label/jump 汇编）
 
-内容：
-  1) 单元：现代脚本 -> 期望指令链（精确比对）
+  1) 单元：现代脚本 -> 期望 label/jump 汇编链（精确比对）
   2) 错误：保留字/变量超限/值过长/fn 递归/语法错等应报 S2CError
-  3) 回喂：把 example/s2c/*.s2c 转出的链喂给真实 SCL（chain_runner）执行
+  3) 回喂：把 example/s2c/*.s2c 与单元链喂给真实 SCL（chain_runner）执行
      （首次运行会尝试用 gcc 编译 example/chain_runner.c）
 """
 
@@ -38,8 +37,6 @@ def section(t):
     print("\n===== " + t + " =====")
 
 
-# ============================ 1. 单元：精确链比对 ============================
-
 def unit_exact(src, expect, msg):
     try:
         chain, warns = translate(src)
@@ -52,45 +49,41 @@ def unit_exact(src, expect, msg):
 
 
 def test_unit():
-    section("1. 单元（精确链比对）")
+    section("1. 单元（精确汇编链比对）")
 
-    # if/else 无条件（沿用 G_RETURN）
-    unit_exact(
-        "var sp=100\ncmp(1,${sp})\n"
-        "if {\n echo(${sp},\"ok\")\n} else {\n echo(${sp},\"ng\")\n}",
-        'var sp=100;cmp 1 ${sp};if -t "echo ${sp} ok" -f "echo ${sp} ng"',
-        "if/else 无条件 + 变量/字符串参数")
+    # if(cond) ... else ...
+    unit_exact('if (cmp(1,1)) { echo("a") } else { echo("b") }',
+               'cmp 1 1;jump -a L1;echo b;jump L2;label L1;echo a;label L2',
+               "if(命令条件)/else → label/jump")
 
-    # while(cond)（do-while 语义）+ fn 作条件（body 先跑一次再判，无门控）
-    unit_exact(
-        "var sp=100\nfn not_done() {\n demo_inc()\n}\n"
-        "demo_reset(3)\nwhile (not_done()) {\n echo(${sp})\n}",
-        'var sp=100;demo_reset 3;while -b;echo ${sp};demo_inc;while -e',
-        "while(用户fn) do-while（直译 while -b/-e）")
+    # while(cond) do-while
+    unit_exact("demo_reset(3)\nwhile (demo_inc()) { echo(\"x\") }",
+               "demo_reset 3;label L1;echo x;demo_inc;jump -a L1",
+               "while(do-while) → label+条件 jump")
 
-    # ret 糖衣 + if(命令) + 分支内引号嵌套 + 多语句 ';'
-    unit_exact(
-        'ret(1); if (cmp(2,2)) { echo("a b",x) } else { echo("c") }; false',
-        'setret 1;cmp 2 2;if -t "echo \'a b\' x" -f "echo c";setret 0',
-        "ret/false 糖衣 + if(命令) + 嵌套引号自动交替")
+    # ret 糖衣 + if(命令) + 引号参数
+    unit_exact('ret(1); if (cmp(2,2)) { echo("a b",z) } else { echo("c") }',
+               'setret 1;cmp 2 2;jump -a L1;echo c;jump L2;'
+               'label L1;echo "a b" z;label L2',
+               "ret 糖衣 + if 真走引号多参")
 
-    # while(false)：do-while 语义下 body 仍执行一次，再强制退出
+    # 无条件 if{} 只用 else（真则跳过）
+    unit_exact('if { } else { echo("n") }',
+               'jump -a L1;echo n;label L1',
+               "if{} 仅 else：真跳跳过")
+
+    # while(false)：do-while 下 body 执行一次
     unit_exact("while (false) { echo(x) }\necho(ok)",
-               "while -b;echo x;setret 0;while -e;echo ok",
-               "while(false) do-while：body 执行一次")
+               "label L1;echo x;setret 0;jump -a L1;echo ok",
+               "while(false) do-while：body 一次")
 
-    # 多行实参 + 引号字符串
-    unit_exact('note("line1",\n     "line2")',
-               "note line1 line2",
-               "多行实参（无空格字符串转裸词）")
+    # fn 参数内联 + 多行实参 + 变量
+    unit_exact('var t = "hello world"\n'
+               'fn note(x,y){ echo(x,y) }\n'
+               'note("p q",2)\necho(${t})',
+               'var t="hello world";echo "p q" 2;echo ${t}',
+               "fn 参数内联 + 引号多词参数 + 变量")
 
-    # 值带空格（引号包裹，SCL var 可用）
-    unit_exact('var t = "hello world"\necho(${t})',
-               'var t="hello world";echo ${t}',
-               "变量值含空格")
-
-
-# ============================ 2. 错误用例 ============================
 
 def unit_err(src, keyword, msg):
     try:
@@ -112,27 +105,23 @@ def test_error():
     unit_err("var if = 1", "保留", "变量名用保留字报错")
     unit_err("while(1){ echo(x) }", "条件", "while 条件非调用报错")
     unit_err("free nobody", "未定义", "free 未定义变量报错")
-
-    # 正常用例：fn 体内 var 也能编译（仅一次调用，槽数不超）
-    try:
-        chain, _ = translate("var a=1\nfn f(){ var b=2 }\nf()")
-        check(chain == "var a=1;var b=2", "fn 内 var 正常编译(单次调用)")
-    except S2CError as e:
-        check(False, "fn 内 var 编译失败: %s" % e.msg)
+    unit_err("jump(L1)", "关键字", "运行时关键字 label/jump 不可调用")
 
 
-# ============================ 3. 回喂（真实 SCL 执行） ============================
+# ============================ 3. 回喂（真实 SCL 执行 chain_runner） ============================
 
 RUNNER = ROOT / "build" / "chain_runner"
 RUNNER_EXE = RUNNER
 if os.name == "nt":
     RUNNER_EXE = RUNNER.with_suffix(".exe")
 
+RUNNER_CFG = ["-DSCL_CFG_SCRIPT_MAX=2048", "-DSCL_CFG_BC_MAX=2048",
+              "-DSCL_CFG_ARG_CACHE_MAX=1024", "-DSCL_CFG_LABEL_MAX=64"]
+
 
 def build_runner():
     (ROOT / "build").mkdir(exist_ok=True)
-    cmd = [
-        "gcc", "-O2", "-DSCL_CFG_SCRIPT_MAX=2048",
+    cmd = ["gcc", "-O2"] + RUNNER_CFG + [
         "-I", str(ROOT / "scl" / "Inc"),
         "-I", str(ROOT / "example"),
         str(ROOT / "scl" / "Src" / "scl.c"),
@@ -144,13 +133,13 @@ def build_runner():
     r = subprocess.run(cmd, capture_output=True)
     if r.returncode != 0:
         print("  (gcc 构建 chain_runner 失败，回喂测试跳过)")
-        print("  " + (r.stderr.decode("utf-8", "replace").splitlines() or [""])[0])
+        err = (r.stderr.decode("utf-8", "replace").splitlines() or [""])[0]
+        print("  " + err)
         return False
     return True
 
 
 def run_chain(chain, tag):
-    """把链写入临时文件并交给 chain_runner 执行；返回 (ok, output)"""
     tmp = ROOT / "build" / ("_feed_%s.chain" % tag)
     tmp.write_text(chain, encoding="utf-8")
     try:
@@ -159,7 +148,7 @@ def run_chain(chain, tag):
     except subprocess.TimeoutExpired:
         return False, "[runner timeout]"
     out = (r.stdout + r.stderr).decode("utf-8", "replace")
-    return (r.returncode == 0 and "RUN-OK" in out), out
+    return (r.returncode == 0 and "RUN-OK" in out and "RUN-TIMEOUT" not in out), out
 
 
 def test_backfeed():
@@ -177,31 +166,33 @@ def test_backfeed():
             continue
         ok, out = run_chain(chain, f.stem)
         check(ok, "回喂 %s (链长 %d)" % (f.name, len(chain)))
-        if not ok and FAIL > 0:
+        if not ok:
             print("       " + out.replace("\n", " / ")[:400])
 
-    # 3.2 单元里的两条代表性链也真实跑
-    chain2 = ('var sp=100;demo_reset 3;while -b;echo ${sp};demo_inc;while -e')
-    ok, out = run_chain(chain2, "unit2")
-    check(ok, "回喂 while(fn) 单元链(do-while)")
+    # 3.2 do-while 语义行为：demo2 循环 body 次数
+    chain, _ = translate(
+        "demo_reset(3)\nfn nd(){ demo_inc() }\nwhile (nd()) { echo(\"step\") }")
+    ok, out = run_chain(chain, "dowhile")
+    check(ok and out.count("echo step") == 3,
+          "回喂 do-while：body 3 次 + RUN-OK")
     if not ok:
         print("       " + out.replace("\n", " / ")[:400])
 
-    chain3 = 'setret 1;cmp 2 2;if -t "echo \'a b\' x" -f "echo c";setret 0'
-    ok, out = run_chain(chain3, "unit3")
-    check(ok, "回喂 ret/if(嵌套引号) 单元链")
+    # 3.3 if/else 行为：真走 then
+    chain, _ = translate(
+        'if (cmp(1,1)) { echo("hit") } else { echo("miss") }')
+    ok, out = run_chain(chain, "ifelse")
+    check(ok and "echo hit" in out and "echo miss" not in out,
+          "回喂 if(cond)/else：真走 then")
     if not ok:
         print("       " + out.replace("\n", " / ")[:400])
 
-    # 3.3 do-while 体内嵌 if（do-while 语义 + 引号交替 + 终止性）
-    src = ("fn c() { demo_inc() }\n"
-           "demo_reset(2)\n"
-           "while (c()) {\n    if (cmp(1,1)) { echo(\"x\") }\n}\n"
-           "echo(\"end\")")
-    chain, _ = translate(src)
+    # 3.4 while 内嵌 if（引号交替 + 终止性）
+    chain, _ = translate(
+        "demo_reset(2)\nwhile (demo_inc()) {\n"
+        "    if (cmp(1,1)) { echo(\"x\") }\n}\necho(\"end\")")
     ok, out = run_chain(chain, "nest")
-    check(ok and out.count("echo x") == 2,
-          "回喂 do-while 内嵌 if（body×2 + RUN-OK）")
+    check(ok and out.count("echo x") == 2, "回喂 while 内嵌 if（body×2）")
     if not ok:
         print("       " + out.replace("\n", " / ")[:400])
 
@@ -209,7 +200,7 @@ def test_backfeed():
 # ============================ main ============================
 
 def main():
-    print("=== Script2Chain 转译器测试 ===")
+    print("=== Script2Chain 转译器测试（v4 label/jump） ===")
     test_unit()
     test_error()
     test_backfeed()

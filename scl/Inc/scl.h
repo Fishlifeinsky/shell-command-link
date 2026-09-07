@@ -4,23 +4,25 @@
   * @brief   SCL（Shell-Command-Link）简易指令链脚本库 —— 公共接口
   *
   *          功能：
-  *            - 执行以 ';' 分隔的指令链（脚本），支持变量 / 条件标志 / if / while
-  *            - 变量：'var name=value' 创建（数量、名长、值长由 scl_cfg.h 裁剪），
-  *              其它指令用 ${name} 取值，C 命令可用 SCL_VarGet() 读；
-  *              'free' 释放；脚本运行结束自动释放全部变量
-  *            - 条件标志 G_RETURN：默认 false，被 if / while -e 读取后自动清零；
+  *            - 执行"指令链"（脚本文本）：'cmd a b' 普通式命令 + 汇编式控制流
+  *                label <名>            // 设置跳转点（不产字节，登记名→字节偏移）
+  *                jump [-a|-b] <名>     // 跳转：-b/默认=无条件；-a=G_RETURN 为真才跳(读后清零)
+  *            - SCL_Run() 先把指令链文本**编译成字节码**（每条指令 4 字节：
+  *                opc(2B) + argOff(2B)，参数存 [len][原文] 缓存；label 表登记跳转点），
+  *                然后主循环解释执行；无 if/while 文本（由上层编译器降级为 label/jump）
+  *            - 命令在 SCL_RegisterCmd 时自动分配 opcode
+  *            - 变量：'var name=value'（数量/名长/值长由 scl_cfg.h 裁剪）、${name} 取值、
+  *              'free' 释放、脚本结束自动释放全部变量
+  *            - 条件标志 G_RETURN：默认 false，脚本开始/结束清零；被 jump -a 读取后自动清零；
   *              C 命令用 SCL_Ret_Set() 写入
-  *            - 命令调用：普通式 'cmd a b'（空白分隔，支持引号参数与 ${} 展开）
-  *            - 控制流（已确认语义）：
-  *                if -t "子链A" -f "子链B"   // 读 G_RETURN：真执行 -t，假执行 -f；可省略其一
-  *                while -b; <body>; while -e // G_RETURN==false 退出；==true 回跳 body（do-while）
-  *            - 执行模型（已确认）：异步/跨主循环步进
-  *                SCL_Run() 拷贝脚本后立即返回并置 busy；主循环周期调 SCL_Loop() 推进；
-  *                命令可带"同步信号回调"（handler 启动异步操作后立即返回，库每 Loop
-  *                轮询 sync(false)，完成后再 sync(true) 清除并继续下一条）
+  *            - 执行模型：异步/跨主循环步进。SCL_Run() 编译后立即返回并置 busy；
+  *              主循环周期调 SCL_Loop() 逐条解释执行；命令可带"同步信号回调"
+  *              （handler 启动异步操作后立即返回，库每 Loop 轮询 sync(false)，
+  *              完成后再 sync(true) 清除并执行下一条）
   *            - 全程静态内存、无 malloc；无 OS / HAL / libc 依赖
   *
-  *          保留关键字（不能注册为业务命令）：if / while / var / free / help
+  *          保留关键字（不能注册为业务命令）：var / free / help / label / jump
+  *            （if / while 已由上层编译器降级，运行时不再提供）
   *
   *          移植接口（用户提供）：
   *            void SCL_Port_PutChar(char c);   // 输出单字符（SCL_CFG_MSG_EN=0 时可不实现）
@@ -67,6 +69,7 @@ typedef struct scl_cmd
     scl_cmd_handler_t    fn;     /* 处理函数 */
     scl_sync_t           sync;   /* 同步信号回调（NULL=同步命令；非 NULL=异步需等待） */
     struct scl_cmd      *next;   /* 链表下一节点（由 SCL_RegisterCmd 维护） */
+    uint16_t             opc;    /* 字节码 opcode（SCL_RegisterCmd 自动分配，勿手填） */
 } scl_cmd_t;
 
 /* ============================ 生命周期 ============================ */

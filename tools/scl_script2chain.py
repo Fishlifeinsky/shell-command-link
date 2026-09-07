@@ -1,26 +1,26 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-scl_script2chain.py — 现代语法脚本 -> SCL 指令链 转译器（纯标准库）
+scl_script2chain.py — 现代语法脚本 -> SCL 指令链 转译器（纯标准库，v4）
 
 设计详见 doc/arc/script2chain-design.md。
 
-现代语法（S2C，v1）：
+现代语法（S2C）：
   - 注释： # ...   // ...   /* ... */
   - 语句以换行或 ';' 分隔；块用大括号 { }
   - 变量：  var 名 = 值            （名<=8、存活<=2、字面值<=15，编译期校验）
   - 释放：  free            / free 名
   - 命令调用： name(a, b, c)        （实参可为裸词/数字/字符串/ ${var} ）
   - 置返回： ret(1|0|true|false)    （映射到目标“置 G_RETURN 命令”，见 --ret-setter）
-  - 布尔句： true / false           （同上）
-  - if：     if (条件) { } [else if (条件) { }] [else { }]
+  - if：     if (条件) { } [else { }]（可 else if）
              无条件形式： if { } else { }   —— 沿用当前 G_RETURN
-             条件 = 命令/自定义 fn 调用（产生 G_RETURN）或 true/false
   - while：  while (条件) { }       （do-while 语义：body 先跑一次再判）
-             —— 直译 SCL 'while -b; body; 条件; while -e'
   - 函数：   fn 名 (参1,参2) { 语句 }   —— 编译期内联展开（文字替换），可用作条件
 
-输出：单行 SCL 指令链（保留关键字的引号交替由工具自动处理）。
+SCL 运行时（v4）已把 if/while 文本移除，控制流改用汇编式：
+    label <名>       设置跳转点
+    jump [-a] <名>   -b/默认=无条件跳；-a=G_RETURN 为真才跳(读后清零)
+本转译器负责把高级 if/while **下翻译**成 label/jump 线性汇编输出。
 """
 
 import sys
@@ -28,8 +28,8 @@ import argparse
 
 # ============================ 保留字 ============================
 
-RESERVED_CMD = {"if", "while", "var", "free", "help"}          # SCL 保留命令
-SYNTAX_WORDS = {"else", "fn", "ret", "true", "false"}          # 语法字（不可当命令/变量名）
+RESERVED_CMD = {"if", "while", "var", "free", "help", "label", "jump"}  # 运行时/关键字
+SYNTAX_WORDS = {"else", "fn", "ret", "true", "false"}                    # 语法字
 
 
 # ============================ 错误 ============================
@@ -77,22 +77,16 @@ def tokenize(src):
                 col += 1
             i += 1
 
-    def peek(c=None):
-        return c if c is not None and False else None
-
     while i < n:
         ch = src[i]
 
-        # 换行
         if ch == "\n":
             toks.append(Tok("NL", "\n", line, col))
             adv()
             continue
-        # 空白
         if ch in " \t\r":
             adv()
             continue
-        # 注释
         if ch == "#":
             while i < n and src[i] != "\n":
                 adv()
@@ -113,7 +107,6 @@ def tokenize(src):
 
         l0, c0 = line, col
 
-        # 字符串字面量（'...' 或 "..."，无转义）
         if ch in "\"'":
             q = ch
             adv()
@@ -125,11 +118,10 @@ def tokenize(src):
                 adv()
             if i >= n:
                 raise S2CError("字符串未闭合", l0, c0)
-            adv()  # 闭引号
+            adv()
             toks.append(Tok("STR", "".join(buf), l0, c0))
             continue
 
-        # ${var} 变量引用
         if ch == "$" and i + 1 < n and src[i + 1] == "{":
             adv(2)
             buf = []
@@ -146,7 +138,6 @@ def tokenize(src):
         if ch == "$":
             raise S2CError("意外的 '$'（变量引用请用 ${name}）", line, col)
 
-        # 数字 / 标识符
         if ch.isdigit() or ch.isalpha() or ch == "_":
             buf = []
             while i < n and (src[i].isalnum() or src[i] == "_"):
@@ -157,7 +148,6 @@ def tokenize(src):
             toks.append(Tok(kind, text, l0, c0))
             continue
 
-        # 单字符符号
         if ch in "(){};,=":
             toks.append(Tok(ch, ch, l0, c0))
             adv()
@@ -170,8 +160,7 @@ def tokenize(src):
 
 
 # ============================ AST ============================
-# 节点用元组表示：
-#   ('call', name, [arg...])           命令/函数调用（arg 为内容字符串）
+#   ('call', name, [arg...])           命令/函数调用
 #   ('var', name, value)               变量赋值
 #   ('free', name|None)                释放
 #   ('ret_set', '1'|'0')               置 G_RETURN
@@ -183,13 +172,11 @@ def tokenize(src):
 # ============================ 解析器 ============================
 
 class Parser:
-    def __init__(self, toks, ret_kw="ret"):
+    def __init__(self, toks):
         self.ts = toks
         self.p = 0
-        self.ret_kw = ret_kw  # 保留（ret 语句用的关键字）
-        self.in_block_depth = 0  # 是否在函数/块内（fn 只允许顶层定义）
+        self.in_block_depth = 0
 
-    # ---- token 游标 ----
     def cur(self):
         return self.ts[self.p]
 
@@ -214,7 +201,6 @@ class Parser:
         return self.next()
 
     def skip_sep(self):
-        """跳过 NL 与 ';'（语句分隔）"""
         while self.at("NL") or self.at(";"):
             self.next()
 
@@ -222,7 +208,6 @@ class Parser:
         while self.at("NL"):
             self.next()
 
-    # ---- 语句分隔与程序 ----
     def parse_program(self):
         stmts = []
         self.skip_sep()
@@ -233,18 +218,16 @@ class Parser:
         return stmts
 
     def expect_stmt_end(self):
-        """语句结束后必须跟分隔符 / '}' / EOF"""
         t = self.cur()
         if t.kind in ("NL", "EOF"):
             return
-        if t.kind == "}" or (t.kind == "RB"):
+        if t.kind == "}":
             return
-        if t.kind == ";" and t.text == ";":
+        if t.kind == ";":
             return
         raise S2CError("语句之间需要分隔（换行或 ';'）", t.line, t.col)
 
     def parse_block(self):
-        """解析 { stmt* }，返回语句列表（大括号已被消费）"""
         self.expect(text="{", what="'{'")
         stmts = []
         self.skip_sep()
@@ -255,10 +238,9 @@ class Parser:
             stmts.append(self.parse_statement())
             self.expect_stmt_end()
             self.skip_sep()
-        self.next()  # '}'
+        self.next()
         return stmts
 
-    # ---- 语句分派 ----
     def parse_statement(self, top=False):
         t = self.cur()
         if t.kind != "ID":
@@ -281,7 +263,6 @@ class Parser:
             self.next()
             return ("ret_set", "1" if kw == "true" else "0")
         if kw == "ret":
-            # ret(1|0|true|false)：映射到目标"置 G_RETURN 命令"
             self.next()
             self.skip_nl()
             self.expect(text="(", what="'('")
@@ -306,17 +287,16 @@ class Parser:
         # 命令/函数调用：name(args)
         self.next()
         if self.at("(", text="("):
-            self.next()   # 消费 '('
+            self.next()
             args = self.parse_args_after_open()
         else:
             raise S2CError("命令 %r 后需要 '('（如 %s(...)）" % (kw, kw), t.line, t.col)
         return ("call", kw, args)
 
-    # ---- var ----
     def parse_var(self):
-        t = self.next()  # 'var'
+        t = self.next()
         name_tok = self.cur()
-        if name_tok.kind not in ("ID",):
+        if name_tok.kind != "ID":
             raise S2CError("var 后需要变量名", name_tok.line, name_tok.col)
         if name_tok.text in SYNTAX_WORDS or name_tok.text in RESERVED_CMD:
             raise S2CError("变量名不能为保留字 %r" % name_tok.text, name_tok.line, name_tok.col)
@@ -328,7 +308,6 @@ class Parser:
         return ("var", name_tok.text, value)
 
     def gather_value(self):
-        """收集一个值/实参的文本内容：连续 STR/ID/NUM/VARREF（到分隔符为止，可跨 NL 于括号内）"""
         parts = []
         while True:
             t = self.cur()
@@ -342,10 +321,8 @@ class Parser:
             break
         return "".join(parts)
 
-    # ---- free ----
     def parse_free(self):
         self.next()
-        # 可带一个名字（同名 token 后即分隔）
         t = self.cur()
         if t.kind == "ID" and t.text not in SYNTAX_WORDS and t.text not in RESERVED_CMD:
             name = t.text
@@ -353,9 +330,8 @@ class Parser:
             return ("free", name)
         return ("free", None)
 
-    # ---- if ----
     def parse_if(self):
-        self.next()  # 'if'
+        self.next()
         cond = None
         if self.at("(", text="("):
             self.next()
@@ -363,23 +339,24 @@ class Parser:
             self.expect(text=")", what="')'")
         then_list = self.parse_block()
         else_list = None
-
-        # 可选的 else / else if
+        # else / else if 检查：允许 '}' 与 'else' 之间有换行；
+        # 若无 else 则把已跳过的换行还原（留给外层当语句分隔）
+        save = self.p
         self.skip_nl()
-        # 允许 '}' 与 'else' 之间无分号
         t = self.cur()
         if t.kind == "ID" and t.text == "else":
             self.next()
             self.skip_nl()
             if self.at("ID", "if"):
-                inner = self.parse_if()  # else if → else 块内放一个 if 语句
+                inner = self.parse_if()
                 else_list = [inner]
             else:
                 else_list = self.parse_block()
+        else:
+            self.p = save
         return ("if", cond, then_list, else_list)
 
     def parse_cond(self):
-        """解析 if/while 的条件：命令/函数调用 或 true/false"""
         t = self.cur()
         if t.kind == "ID":
             if t.text == "true":
@@ -393,16 +370,15 @@ class Parser:
             name = t.text
             self.next()
             if self.at("(", text="("):
-                self.next()   # 消费 '('
+                self.next()
                 args = self.parse_args_after_open()
             else:
                 args = []
             return ("call", name, args)
         raise S2CError("条件需要为命令调用或 true/false", t.line, t.col)
 
-    # ---- while ----
     def parse_while(self):
-        self.next()  # 'while'
+        self.next()
         if not self.at("(", text="("):
             t = self.cur()
             raise S2CError("while 需要条件 while(条件){...}", t.line, t.col)
@@ -412,9 +388,8 @@ class Parser:
         body = self.parse_block()
         return ("while", cond, body)
 
-    # ---- fn ----
     def parse_fndef(self):
-        t = self.next()  # 'fn'
+        t = self.next()
         name_tok = self.cur()
         if name_tok.kind != "ID":
             raise S2CError("fn 后需要函数名", name_tok.line, name_tok.col)
@@ -438,7 +413,7 @@ class Parser:
             if self.at(",", text=","):
                 self.next()
                 self.skip_nl()
-        self.next()  # ')'
+        self.next()
         self.in_block_depth += 1
         try:
             body = self.parse_block()
@@ -446,7 +421,6 @@ class Parser:
             self.in_block_depth -= 1
         return ("fndef", name, params, body)
 
-    # ---- 实参（'(' 已被消费）----
     def parse_args_after_open(self):
         args = []
         self.skip_nl()
@@ -459,11 +433,10 @@ class Parser:
                 self.next()
                 break
             v = self.gather_value()
-            # gather_value 可能因到达 '(' 等停止 → 那是不允许的
             t = self.cur()
             if t.kind == "EOF":
                 raise S2CError("缺 ')'（括号未闭合）", t.line, t.col)
-            if t.kind not in (",", ")", "NL") and not (t.kind == "NL"):
+            if t.kind not in (",", ")", "NL"):
                 raise S2CError("实参中出现不允许的内容 %r" % t.text, t.line, t.col)
             args.append(v)
             self.skip_nl()
@@ -475,121 +448,101 @@ class Parser:
         return args
 
 
-# ============================ 编译器 ============================
+# ============================ 编译器（输出 label/jump 线性汇编） ============================
 
 class Compiler:
-    def __init__(self, ret_setter="setret", max_len=256, var_max=2,
+    def __init__(self, ret_setter="setret", var_max=2,
                  name_max=8, value_max=15):
         self.ret_setter = ret_setter
-        self.max_len = max_len
         self.var_max = var_max
         self.name_max = name_max
         self.value_max = value_max
-        self.fns = {}          # name -> ('fndef',...)
+        self.fns = {}
         self.warnings = []
+        self._label_seq = 0
 
-    # ---- 引号工具 ----
-    @staticmethod
-    def other(q):
-        return "'" if q == '"' else '"'
+    # ---- 标签 / 引号 ----
+    def new_label(self):
+        self._label_seq += 1
+        return "L%d" % self._label_seq
 
-    def wrap_q(self, text, depth):
-        """把子链文本用引号包成 SCL 分支值；depth=当前文本已处引号层数"""
-        q = '"' if (depth % 2 == 0) else "'"
-        if q in text:
-            raise S2CError(
-                "生成的子链包含与包裹引号冲突的字符 %s（内容过长或含引号）" % q)
-        return q + text + q
-
-    def quote_lit(self, text, depth):
-        """给实参文本加引号（按需）；depth=当前所在引号层数（0=顶层）"""
-        need = self.need_quote(text)
+    def quote_lit(self, text):
+        """给参数加引号（按需）。SCL 运行时只按空白分词，故含空白/';'等需引号。"""
+        need = False
+        if text == "":
+            need = True
+        else:
+            for ch in " \t;\"'\\":
+                if ch in text:
+                    need = True
+                    break
         if not need:
             return text
-        if depth == 0:
-            # 顶层：优先 "，若内容含 " 则用 '
-            if '"' not in text:
-                return '"' + text + '"'
-            if "'" not in text:
-                return "'" + text + "'"
-            raise S2CError("字符串同时含 ' 与 \"，无法在顶层表示: %r" % text)
-        # 非顶层：只能用“与当前最内层包裹引号相反”的类型
-        q = self.other('"' if (depth % 2 == 1) else "'")
-        if q in text:
-            raise S2CError("该字符串在嵌套层无法安全表示（含引号 %s）: %r" % (q, text))
-        return q + text + q
+        if '"' not in text:
+            return '"' + text + '"'
+        if "'" not in text:
+            return "'" + text + "'"
+        raise S2CError("字符串同时含 ' 与 \"，无法表示: %r" % text)
 
-    @staticmethod
-    def need_quote(text):
-        """普通式参数以空白分隔：含空白/';'/引号/反斜杠或为空才需要引号"""
-        if text == "":
-            return True
-        for ch in " \t;\"'\\":
-            if ch in text:
-                return True
-        return False
+    def emit_call(self, name, args):
+        """SCL 普通式调用：'cmd a b'"""
+        if not args:
+            return name
+        return name + " " + " ".join(self.quote_lit(a) for a in args)
 
-    # ---- 主流程 ----
+    # ---- 主流程：产生线性代码列表 ----
     def compile(self, stmts):
-        chain = self.emit_stmts(stmts, 0, var_state=set())
-        return chain
+        lines = []
+        self.emit_stmts(stmts, lines, set(), [])
+        return ";".join(lines)
 
-    def emit_stmts(self, stmts, depth, var_state, exp_stack=None):
-        out = []
-        vs = set(var_state)  # 本块复制（不污染外层；块间 var 生命周期按语句序累计在外层）
+    def emit_stmts(self, stmts, lines, vs, exp_stack):
         for st in stmts:
-            seg = self.emit_stmt(st, depth, vs, exp_stack or [])
-            if seg:
-                out.append(seg)
-        return ";".join(out)
+            self.emit_stmt(st, lines, vs, exp_stack)
 
-    def emit_stmt(self, st, depth, vs, exp_stack):
+    def code(self, stmts, vs, exp_stack):
+        lines = []
+        self.emit_stmts(stmts, lines, vs, exp_stack)
+        return lines
+
+    def emit_stmt(self, st, lines, vs, exp_stack):
         k = st[0]
         if k == "call":
             name, args = st[1], st[2]
             if name in self.fns:
-                return self.expand_fn(name, args, depth, vs, exp_stack)
+                self.expand_fn(name, args, lines, vs, exp_stack)
+                return
             if name in RESERVED_CMD:
                 raise S2CError("不能调用保留命令 %r（SCL 内置）" % name)
-            return self.emit_call(name, args, depth)
-        if k == "var":
-            return self.emit_var(st[1], st[2], depth, vs)
-        if k == "free":
-            return self.emit_free(st[1], depth, vs)
-        if k == "ret_set":
-            return self.emit_call(self.ret_setter, [st[1]], depth)
-        if k == "if":
-            return self.emit_if(st, depth, vs, exp_stack)
-        if k == "while":
-            return self.emit_while(st, depth, vs, exp_stack)
-        if k == "fndef":
-            # 定义不输出（已在收集阶段放入 self.fns）
-            return ""
-        raise S2CError("未知 AST 节点 %r" % (k,))
+            lines.append(self.emit_call(name, args))
+        elif k == "var":
+            lines.append(self.emit_var(st[1], st[2], vs))
+        elif k == "free":
+            lines.append(self.emit_free(st[1], vs))
+        elif k == "ret_set":
+            lines.append(self.emit_call(self.ret_setter, [st[1]]))
+        elif k == "if":
+            self.emit_if(st, lines, vs, exp_stack)
+        elif k == "while":
+            self.emit_while(st, lines, vs, exp_stack)
+        elif k == "fndef":
+            pass   # 定义不输出
+        else:
+            raise S2CError("未知 AST 节点 %r" % (k,))
 
-    def emit_call(self, name, args, depth):
-        """输出 SCL 普通式调用：'cmd a b'（函数式已从 SCL 移除，故不再用括号）"""
-        if not args:
-            return name
-        parts = []
-        for a in args:
-            parts.append(self.quote_lit(a, depth))
-        return name + " " + " ".join(parts)
-
-    def emit_var(self, name, value, depth, vs):
+    def emit_var(self, name, value, vs):
         if len(name) > self.name_max:
             raise S2CError("变量名 %r 过长（>%d）" % (name, self.name_max))
         if name in RESERVED_CMD or name in SYNTAX_WORDS:
             raise S2CError("变量名不能为保留字 %r" % name)
-        # 字面值长度（不含 ${}）校验
         if "${" not in value and len(value) > self.value_max:
             raise S2CError("变量 %s 的字面值过长（>%d）：%r" % (name, self.value_max, value))
         vs.add(name)
         if len(vs) > self.var_max:
             raise S2CError("同时存活的变量超过 %d 个（含 %s）" % (self.var_max, name))
-        return "var " + name + "=" + self.quote_lit(value, depth)
+        return "var " + name + "=" + self.quote_lit(value)
 
-    def emit_free(self, name, depth, vs):
+    def emit_free(self, name, vs):
         if name is not None:
             if name not in vs:
                 raise S2CError("释放未定义的变量 %r" % name)
@@ -598,8 +551,85 @@ class Compiler:
         vs.clear()
         return "free"
 
-    # ---- 函数内联展开 ----
-    def expand_fn(self, name, args, depth, vs, exp_stack):
+    # ---- 条件 → 一组会产生 G_RETURN 的代码行 ----
+    def emit_cond(self, cond, out, vs, exp_stack):
+        if cond[0] == "bool":
+            out.append(self.emit_call(self.ret_setter, ["1" if cond[1] else "0"]))
+            return
+        name, args = cond[1], cond[2]
+        if name in self.fns:
+            self.expand_fn(name, args, out, vs, exp_stack)
+            return
+        if name in RESERVED_CMD:
+            raise S2CError("条件不能调用保留命令 %r" % name)
+        out.append(self.emit_call(name, args))
+
+    # ---- if 转译（线性 label/jump） ----
+    def emit_if(self, st, lines, vs, exp_stack):
+        _, cond, thenl, elsel = st
+        has_then = bool(thenl)
+        has_else = bool(elsel)
+
+        condlines = []
+        if cond is not None:
+            self.emit_cond(cond, condlines, vs, exp_stack)
+
+        if not has_then and not has_else:
+            lines.extend(condlines)   # 保留条件副作用
+            return
+
+        if has_then and has_else:
+            # cond; jump -a Lt; <else>; jump Le; label Lt; <then>; label Le
+            lt = self.new_label()
+            le = self.new_label()
+            lines.extend(condlines)
+            lines.append("jump -a " + lt)
+            lines.extend(self.code(elsel, vs, exp_stack))
+            lines.append("jump " + le)
+            lines.append("label " + lt)
+            lines.extend(self.code(thenl, vs, exp_stack))
+            lines.append("label " + le)
+        elif has_then:
+            # 只有 then：真→Lt 执行，假→跳到结束跳过
+            lt = self.new_label()
+            le = self.new_label()
+            lines.extend(condlines)
+            lines.append("jump -a " + lt)
+            lines.append("jump " + le)
+            lines.append("label " + lt)
+            lines.extend(self.code(thenl, vs, exp_stack))
+            lines.append("label " + le)
+        else:
+            # 只有 else：真→结束(跳过 else)，假→执行 else
+            le = self.new_label()
+            lines.extend(condlines)
+            lines.append("jump -a " + le)
+            lines.extend(self.code(elsel, vs, exp_stack))
+            lines.append("label " + le)
+
+    # ---- while 转译（do-while：body 先跑再判；label+条件 jump） ----
+    def emit_while(self, st, lines, vs, exp_stack):
+        _, cond, body = st
+        lt = self.new_label()
+        bodyl = self.code(body, vs, exp_stack)
+        condl = []
+        if cond[0] == "bool":
+            if cond[1]:
+                self.warnings.append(
+                    "while(true) 为 do-while 且无终止条件，将循环到外部强制中止")
+                condl.append(self.emit_call(self.ret_setter, ["1"]))
+            else:
+                condl.append(self.emit_call(self.ret_setter, ["0"]))
+        else:
+            self.emit_cond(cond, condl, vs, exp_stack)
+
+        lines.append("label " + lt)
+        lines.extend(bodyl)
+        lines.extend(condl)
+        lines.append("jump -a " + lt)
+
+    # ---- 函数内联 ----
+    def expand_fn(self, name, args, out, vs, exp_stack):
         if name in exp_stack:
             raise S2CError("函数递归/循环调用：%s" % " -> ".join(exp_stack + [name]))
         fd = self.fns[name]
@@ -609,11 +639,9 @@ class Compiler:
                            (name, len(params), len(args)))
         sub = dict(zip(params, args))
         body2 = self.clone_sub(body, sub)
-        seg = self.emit_stmts(body2, depth, vs, exp_stack + [name])
-        return seg
+        self.emit_stmts(body2, out, vs, exp_stack + [name])
 
     def clone_sub(self, stmts, sub):
-        """深拷贝语句列表，并把'叶子内容 == 参数名'的实参/值替换为实参文本"""
         out = []
         for st in stmts:
             k = st[0]
@@ -624,21 +652,17 @@ class Compiler:
                 nm, val = st[1], st[2]
                 out.append(("var", nm, sub.get(val, val)))
             elif k == "free":
-                nm = st[1]
-                out.append(("free", nm))
+                out.append(st)
             elif k == "ret_set":
                 out.append(st)
             elif k == "if":
                 cond, thenl, elsel = st[1], st[2], st[3]
-                c2 = self.clone_cond(cond, sub)
-                t2 = self.clone_sub(thenl, sub)
-                e2 = self.clone_sub(elsel, sub) if elsel is not None else None
-                out.append(("if", c2, t2, e2))
+                out.append(("if", self.clone_cond(cond, sub),
+                            self.clone_sub(thenl, sub),
+                            self.clone_sub(elsel, sub) if elsel is not None else None))
             elif k == "while":
                 cond, body = st[1], st[2]
-                c2 = self.clone_cond(cond, sub)
-                b2 = self.clone_sub(body, sub)
-                out.append(("while", c2, b2))
+                out.append(("while", self.clone_cond(cond, sub), self.clone_sub(body, sub)))
             else:
                 raise S2CError("fn 体内不支持该语句 %r" % (k,))
         return out
@@ -649,97 +673,21 @@ class Compiler:
             return None
         if cond[0] == "bool":
             return cond
-        # call
         name, args = cond[1], cond[2]
         return ("call", name, [sub.get(a, a) for a in args])
-
-    # ---- if 转译 ----
-    def emit_if(self, st, depth, vs, exp_stack):
-        _, cond, thenl, elsel = st
-        has_then = bool(thenl)
-        has_else = bool(elsel)
-
-        cond_chain = ""
-        if cond is not None:
-            cond_chain = self.emit_cond(cond, depth, vs, exp_stack)
-
-        # 两分支都空 → 只留条件（副作用保留）
-        if not has_then and not has_else:
-            return cond_chain
-
-        q = '"' if (depth % 2 == 0) else "'"
-
-        pieces = []
-        if cond_chain:
-            pieces.append(cond_chain)
-
-        # then
-        then_text = self.emit_stmts(thenl, depth + 1, vs, exp_stack) if has_then else ""
-        # else：else 块里可能含嵌套 if（else if）→ 作为一条链文本
-        else_text = ""
-        if has_else:
-            else_text = self.emit_stmts(elsel, depth + 1, vs, exp_stack)
-
-        # 组装单条 if 子句
-        clause = "if"
-        if has_then:
-            clause += " -t " + self.wrap_q(then_text, depth)
-        if has_else and else_text:
-            clause += " -f " + self.wrap_q(else_text, depth)
-        pieces.append(clause)
-        return ";".join(pieces)
-
-    def emit_cond(self, cond, depth, vs, exp_stack):
-        """条件 → 一段会产生 G_RETURN 的链"""
-        if cond[0] == "bool":
-            return self.emit_call(self.ret_setter, ["1" if cond[1] else "0"], depth)
-        # call（可能是用户 fn）
-        name, args = cond[1], cond[2]
-        if name in self.fns:
-            return self.expand_fn(name, args, depth, vs, exp_stack)
-        if name in RESERVED_CMD:
-            raise S2CError("条件不能调用保留命令 %r" % name)
-        return self.emit_call(name, args, depth)
-
-    # ---- while 转译（do-while：body 先跑一次再判；直译 SCL while -b/-e） ----
-    def emit_while(self, st, depth, vs, exp_stack):
-        _, cond, body = st
-
-        # 条件在 body 之后判定（do-while），故不再需要"先判"门控
-        body_text = self.emit_stmts(body, depth, vs, exp_stack)
-        if cond[0] == "bool":
-            if not cond[1]:
-                # do-while(false)：body 仍执行一次，之后强制退出
-                cond_text = self.emit_call(self.ret_setter, ["0"], depth)
-            else:
-                # do-while(true)：恒真循环，依赖 SCL_CFG_WHILE_MAX 兜底
-                self.warnings.append(
-                    "while(true) 为 do-while 且无终止条件，"
-                    "将依赖 SCL_CFG_WHILE_MAX 兜底(100000 次)强制退出")
-                cond_text = self.emit_call(self.ret_setter, ["1"], depth)
-        else:
-            cond_text = self.emit_cond(cond, depth, vs, exp_stack)
-
-        parts = ["while -b"]
-        if body_text:
-            parts.append(body_text)
-        parts.append(cond_text)
-        parts.append("while -e")
-        return ";".join(parts)
 
 
 # ============================ 顶层接口 ============================
 
-def translate(source, ret_setter="setret", max_len=256,
+def translate(source, ret_setter="setret", max_len=512,
               var_max=2, name_max=8, value_max=15):
     """源码 → (chain, warnings)。抛 S2CError。"""
     toks = tokenize(source)
     parser = Parser(toks)
     stmts = parser.parse_program()
 
-    comp = Compiler(ret_setter=ret_setter, max_len=max_len,
-                    var_max=var_max, name_max=name_max, value_max=value_max)
-    # 收集 fn（顶层定义），并按定义顺序排到 fns 表
+    comp = Compiler(ret_setter=ret_setter, var_max=var_max,
+                    name_max=name_max, value_max=value_max)
     for st in stmts:
         if st[0] == "fndef":
             if st[1] in comp.fns:
@@ -751,15 +699,15 @@ def translate(source, ret_setter="setret", max_len=256,
 
 def main(argv=None):
     ap = argparse.ArgumentParser(
-        description="现代语法脚本 -> SCL 指令链（S2C 转译器）")
+        description="现代语法脚本 -> SCL 指令链（S2C 转译器，输出 label/jump 汇编）")
     ap.add_argument("input", nargs="?", default="-",
                     help="输入 .s2c 文件；缺省或 '-' 从 stdin 读")
     ap.add_argument("-o", "--output", default=None,
                     help="输出文件（缺省打印到 stdout）")
     ap.add_argument("--ret-setter", default="setret",
                     help="置 G_RETURN 命令名（ret()/true/false 映射到它，默认 setret）")
-    ap.add_argument("--max-len", type=int, default=256,
-                    help="单条链最大长度告警阈值（默认 256，对齐 SCL_CFG_SCRIPT_MAX）")
+    ap.add_argument("--max-len", type=int, default=512,
+                    help="单条链最大长度告警阈值（默认 512，对齐 SCL_CFG_SCRIPT_MAX）")
     ap.add_argument("--var-max", type=int, default=2, help="同时存活变量上限（默认 2）")
     ap.add_argument("--name-max", type=int, default=8, help="变量名长度上限（默认 8）")
     ap.add_argument("--value-max", type=int, default=15, help="变量字面值长度上限（默认 15）")

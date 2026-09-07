@@ -1,8 +1,12 @@
-# 当前指令链调用流程（现状 v3，doc/arc）
+# 当前指令链调用流程（现状 v4，doc/arc）
 
-> 对应实现：`scl/Src/scl.c`。描述**当前已实现**的指令链调用/执行流程
-> （含 v2 移除函数式调用、v3 仅 SCL 层语义不变、modern 层 while 为 do-while 等历史变更后的现状）。
-> 设计背景见 `shell-command-link-design.md`；指令链语法见 `doc/spec/scl-spec.md`。
+> 对应实现：`scl/Src/scl.c`。描述**当前已实现**的指令链调用/执行流程。
+>
+> ⚠️ **v4 变更（2026-09-07）**：运行时已改为「文本 → 字节码编译 + label/jump 解释执行」
+> （指令 4B=opc+argOff，参数 len+原文缓存，label 表登记跳转点，命令注册自动分配 opcode）；
+> 文本层不再提供 if/while（由现代编译器降级为 label/jump）。
+> 本文正文早期为 v3 之前描述，属历史；现行语法以 `doc/spec/scl-spec.md` 为准。
+> 设计背景见 `shell-command-link-design.md`。
 
 ## 0. 总览
 
