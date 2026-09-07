@@ -15,7 +15,14 @@
 - **内置 int/bool 运算指令**（参考 C，保留字）：
   `iadd isub imul idiv imod ineg`（写回变量）/ `ieq ine igt ige ilt ile`
   `band bor bnot btest`（结果进 G_RETURN）/ `iand ior ixor inot shl shr`（位运算，写回变量）
-- 字面量支持十进制 / `0x` 十六进制 / `0b` 二进制
+  `seq sneq`（字符串/flag 相等·不等比较 → G_RETURN）
+- **预编译只读程序（s2c→C，省 RAM）**：`scl_emit_c.py` 把脚本编译成 const
+  字节码放 Flash，`SCL_RunProg()` 直接执行，**不占 RAM 字节码/参数缓存/label**；
+  可 `SCL_CFG_RUN_TEXT_EN=0` 裁掉动态编译器（固定脚本最省 RAM 用法）
+- **交互 Shell**（example/scl_shell）：串口 REPL —— 行编辑/历史 ↑↓/Tab 补全
+  命令与 `${var}`；`SCL_VarKeep(1)` 会话变量跨命令保留
+- **MCU 串口模拟**（example/sim_uart）：把 PC 终端当串口体验/调试
+- **脚本结束自动全释放**（默认）；置 `SCL_VarKeep(1)` 后保留为会话变量
 - **汇编式控制流**：`label 名` 设跳转点；`jump [-a] 名`（-a=G_RETURN 真跳）
 - **文本→字节码**：指令固定 4 字节（opc + 参数偏移），命令注册自动分配 opcode
 - **异步/跨主循环步进**：命令可带同步信号回调，适配"命令耗时等待硬件"
@@ -29,6 +36,9 @@
 | `doc/arc/v02-typed-vars-design.md` | **v0.2 设计**：类型化参数缓存/多类型变量/int·bool 运算指令 |
 | `doc/arc/v03-brainstorm.md` / `v03-plan.md` | **v0.3 头脑风暴/计划**：完整表达式·for·位运算·循环保护·交互终端 |
 | `doc/arc/script2chain-design.md` | 现代脚本→指令链 转译器设计（语法与映射） |
+| `doc/arc/scl-const-prog.md` | **v0.3**：预编译只读程序（s2c→C，省 RAM）设计 |
+| `doc/arc/scl-shell-sim.md` | **v0.3**：交互 Shell + MCU 串口模拟 + VarKeep |
+| `doc/other/scl-config-profiles.md` | **v0.3**：配置裁剪档模板（min/平衡/full + 内存预算） |
 | `doc/spec/scl-spec.md` | 语法/API/移植/裁剪规格 + 集成示例 |
 | `doc/other/scl-test-report.md` | 全量测试报告（大小/速度/可靠性/重复性/复杂度） |
 | `doc/user/prompt-shell-command-link.md` | 原始需求存档 |
@@ -37,10 +47,12 @@
 
 ```
 scl/Inc/scl.h scl_cfg.h       库公共接口 + 可裁剪配置
-scl/Src/scl.c                 解析器/执行器/变量/if/while/异步
+scl/Src/scl.c                 解析器/执行器/变量/异步/会话与只读程序支持
 tools/scl_script2chain.py     现代语法脚本 → SCL 指令链（Python 转译器）
-tools/s2c_test.py             转译器测试（精确比对 + 真实回喂）
-example/                      PC 示例（main.c 全量测试 / chain_runner.c 回喂工具 / s2c/*.s2c 现代脚本）
+tools/scl_emit_c.py           SCL 脚本 → const C 程序（Flash 只读，省 RAM）
+tools/s2c_test.py             转译器测试（精确比对 + 真实回喂 + emit-c）
+example/                      PC 示例（main.c 全量测试 / chain_runner 回喂 /
+                              scl_shell 交互 Shell / sim_uart 串口模拟 / s2c/*.s2c）
 ```
 
 ## 快速集成
@@ -67,10 +79,26 @@ int main(void) {
 
 ```bash
 gcc -O2 -Wall -Wextra -I scl/Inc -I example \
-    scl/Src/scl.c example/scl_port.c example/demo_cmds.c example/main.c \
-    -o build/scl_test
-# 或用 CMake：cmake -S example -B build && cmake --build build
+    scl/Src/scl.c example/scl_port.c example/demo_cmds.c \
+    example/scl_shell.c example/main.c -o build/scl_test        # 全量测试(含 Shell)
+
+# 交互终端：把 PC 终端当 MCU 串口（echo/var/Tab 补全/↑↓ 历史/quit）
+gcc -O2 -Wall -Wextra -I scl/Inc -I example \
+    scl/Src/scl.c example/scl_port.c example/demo_cmds.c \
+    example/scl_shell.c example/sim_uart.c -o build/sim_uart && ./build/sim_uart
 ```
+
+## 固定脚本最省 RAM：预编译只读程序（s2c→C）
+
+脚本不变时，用工具编译成 const C 放 Flash，运行时 `SCL_RunProg()` 直接执行：
+
+```bash
+python tools/scl_emit_c.py boot.s2c -o boot_prog.c   # 生成 const 字节码 C 源
+# 固件里：SCL_Init(); <注册命令>; SCL_RunProg(&scl_boot_prog); 周期 SCL_Loop()
+# MCU 裁剪：编译加 -DSCL_CFG_RUN_TEXT_EN=0 连动态编译器一起裁掉
+```
+
+详见 `doc/arc/scl-const-prog.md`。
 
 ## 现代脚本 → 指令链（Python 工具）
 
@@ -81,6 +109,7 @@ python tools/scl_script2chain.py example/s2c/demo1_if.s2c     # 打印指令链
 python tools/scl_script2chain.py in.s2c -o out.chain          # 写文件
 python tools/scl_script2chain.py --ret-setter setret < in.s2c # 改置返回命令名
 python tools/s2c_test.py                                      # 转译器测试(含真实回喂)
+python tools/scl_emit_c.py demo.s2c -o demo_prog.c           # 现代脚本→const C 程序
 ```
 
 现代语法速览（详见 `doc/arc/script2chain-design.md`，示例见 `example/s2c/`）：
