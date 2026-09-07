@@ -1,0 +1,20 @@
+# 编译产物 / 构建目录
+build/
+*.o
+*.obj
+*.elf
+*.axf
+*.hex
+*.bin
+*.map
+*.lst
+*.su
+
+# 编辑器 / IDE
+.vscode/
+.idea/
+*.swp
+
+# 日志 / 临时文件
+*.log
+tmp/
