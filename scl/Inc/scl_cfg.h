@@ -67,6 +67,11 @@ extern "C" {
 #define SCL_CFG_LABEL_NAME_MAX   16u
 #endif
 
+/* 每脚本最大解释步数（防死循环；0=关闭）。超限自动中断并报错 */
+#ifndef SCL_CFG_STEP_LIMIT
+#define SCL_CFG_STEP_LIMIT       100000u
+#endif
+
 /* ============================ 命令参数 ============================ */
 
 /* 单条命令最大参数个数（argv 数组长度） */

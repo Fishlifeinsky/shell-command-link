@@ -222,6 +222,35 @@ static void TestArith(void)
     CHECK(SCL_VarCount() == 0 && SCL_Idle(), "运算错误后状态干净");
 }
 
+/* ========================== 1d. 位运算 / 进制字面量 / 步进保护 ========================== */
+
+static void TestBitHex(void)
+{
+    Section("1d. 位运算 / 进制字面量 / 步进保护");
+
+    RunCap("var int a=0xf;var int b=0b11;echo a=${a} b=${b}", g_cap, sizeof(g_cap));
+    CHECK(strstr(g_cap, "echo a=15 b=3") != NULL, "var 支持 0x/0b 字面量");
+    RunCap("echo 0x10", g_cap, sizeof(g_cap));
+    CHECK(strstr(g_cap, "echo 16") != NULL, "命令参数 0x 字面量 → int");
+
+    RunCap("var int a=5;iand a 3 a;echo a=${a}", g_cap, sizeof(g_cap));
+    CHECK(strstr(g_cap, "echo a=1") != NULL, "iand (5&3=1)");
+    RunCap("var int a=5;ixor a 3 a;echo a=${a}", g_cap, sizeof(g_cap));
+    CHECK(strstr(g_cap, "echo a=6") != NULL, "ixor (5^3=6)");
+    RunCap("var int a=5;ior a 2 a;echo a=${a}", g_cap, sizeof(g_cap));
+    CHECK(strstr(g_cap, "echo a=7") != NULL, "ior  (5|2=7)");
+    RunCap("var int a=1;shl a 4 a;echo a=${a}", g_cap, sizeof(g_cap));
+    CHECK(strstr(g_cap, "echo a=16") != NULL, "shl (1<<4=16)");
+    RunCap("var int a=0x80000000;shr a 4 a;echo a=${a}", g_cap, sizeof(g_cap));
+    CHECK(strstr(g_cap, "echo a=134217728") != NULL, "shr 逻辑右移");
+    RunCap("var int a=0xFFFFFFFF;inot a a;echo a=${a}", g_cap, sizeof(g_cap));
+    CHECK(strstr(g_cap, "echo a=0") != NULL, "inot (~0xFFFFFFFF=0)");
+
+    RunCap("label L;setret 1;jump -a L", g_cap, sizeof(g_cap));
+    CHECK(strstr(g_cap, "步进超限") != NULL && SCL_Idle() && SCL_VarCount() == 0,
+          "死循环被步进保护中断且状态干净");
+}
+
 /* ========================== 2. label / jump ========================== */
 
 static void TestJump(void)
@@ -446,6 +475,7 @@ int main(void)
     TestBasics();
     TestVarsTyped();
     TestArith();
+    TestBitHex();
     TestJump();
     TestAsync();
     TestReliability();

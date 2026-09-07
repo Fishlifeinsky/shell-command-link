@@ -87,6 +87,14 @@ enum
     SCL_OP_BNOT = 0x001Eu,  /* bnot a   : G_RETURN = 布尔非 */
     SCL_OP_BTEST = 0x001Fu, /* btest a  : G_RETURN = 操作数真值（int≠0/bool/flag 已定义） */
 
+    /* v0.3：int 位运算/移位（保留字，参考 C 的 & | ^ ~ << >>） */
+    SCL_OP_IAND = 0x0020u,  /* iand a b dst : a & b  → dst */
+    SCL_OP_IOR  = 0x0021u,  /* ior  a b dst : a | b  → dst */
+    SCL_OP_IXOR = 0x0022u,  /* ixor a b dst : a ^ b  → dst */
+    SCL_OP_INOT = 0x0023u,  /* inot a dst   : ~a     → dst */
+    SCL_OP_SHL  = 0x0024u,  /* shl  a b dst : a << b → dst */
+    SCL_OP_SHR  = 0x0025u,  /* shr  a b dst : a >> b → dst */
+
     SCL_OP_CMD_BASE = 0x0100u  /* 注册命令 opcode 起点（自动递增） */
 };
 
@@ -121,6 +129,7 @@ static scl_var_t s_vars[SCL_CFG_VAR_MAX];
 static uint8_t  s_bc[SCL_CFG_BC_MAX];       /* 每条指令 4 字节 */
 static uint16_t s_bc_len = 0u;              /* 有效字节数（4 的倍数） */
 static uint16_t s_pc     = 0u;              /* 程序计数器（解释执行） */
+static uint32_t s_steps  = 0u;              /* 本脚本已执行步数（步进保护） */
 
 /* ---- 参数字节缓存：每条指令参数区 = [total(1)][type 块序列]，argOff 指向 total 字节。
      type 块（type 开头，无空格分隔）：
@@ -237,7 +246,8 @@ static uint8_t Scl_EqIN(const char *a, const char *b, uint16_t n)
     return 1u;
 }
 
-/* 解析整段十进制整数（可带 '-' 前缀）。成功返回 0 并写 *out；非法/溢出返回 -1 */
+/* 解析整段整数（十进制可带 '-'；0x/0X 十六进制；0b/0B 二进制）。
+   成功返回 0 并写 *out；非法/溢出返回 -1 */
 static int Scl_ParseI32Len(const char *s, uint16_t len, int32_t *out)
 {
     uint16_t i = 0u;
@@ -248,6 +258,28 @@ static int Scl_ParseI32Len(const char *s, uint16_t len, int32_t *out)
     if ((len == 0u) || (s == NULL))
     {
         return -1;
+    }
+    /* 0x 十六进制 / 0b 二进制 前缀 */
+    if ((len > 2u) && (s[0] == '0') && ((s[1] == 'x') || (s[1] == 'X') ||
+                                        (s[1] == 'b') || (s[1] == 'B')))
+    {
+        uint32_t base = ((s[1] == 'x') || (s[1] == 'X')) ? 16u : 2u;
+        uint32_t acc = 0u;
+        uint16_t j;
+        for (j = 2u; j < len; j++)
+        {
+            char c = s[j];
+            uint32_t d;
+            if ((c >= '0') && (c <= '9')) { d = (uint32_t)(c - '0'); }
+            else if ((c >= 'a') && (c <= 'f')) { d = (uint32_t)(c - 'a' + 10u); }
+            else if ((c >= 'A') && (c <= 'F')) { d = (uint32_t)(c - 'A' + 10u); }
+            else { return -1; }
+            if (d >= base) { return -1; }
+            if (acc > (0xFFFFFFFFu - d) / base) { return -1; }   /* 溢出 */
+            acc = acc * base + d;
+        }
+        *out = (int32_t)acc;   /* 0xFFFFFFFF → -1 亦允许 */
+        return 0;
     }
     if (s[0] == '-')
     {
@@ -1219,7 +1251,10 @@ static const scl_opword_t s_opwords[] =
     { "igt",  3u,  SCL_OP_IGT   }, { "ige",  3u,  SCL_OP_IGE   },
     { "ilt",  3u,  SCL_OP_ILT   }, { "ile",  3u,  SCL_OP_ILE   },
     { "band", 4u,  SCL_OP_BAND  }, { "bor",  3u,  SCL_OP_BOR   },
-    { "bnot", 4u,  SCL_OP_BNOT  }, { "btest",5u,  SCL_OP_BTEST }
+    { "bnot", 4u,  SCL_OP_BNOT  }, { "btest",5u,  SCL_OP_BTEST },
+    { "iand", 4u,  SCL_OP_IAND  }, { "ior",  3u,  SCL_OP_IOR   },
+    { "ixor", 4u,  SCL_OP_IXOR  }, { "inot", 4u,  SCL_OP_INOT  },
+    { "shl",  3u,  SCL_OP_SHL   }, { "shr",  3u,  SCL_OP_SHR   }
 };
 
 /* 按名字查内置运算指令 opcode；不是返回 0 */
@@ -1763,6 +1798,7 @@ static void Scl_Finish(int reason)
     s_busy     = 0u;
     s_wait_cmd = NULL;
     s_pc       = 0u;
+    s_steps    = 0u;
     s_bc_len   = 0u;
     s_arg_len  = 0u;
     s_label_cnt = 0u;
@@ -1822,12 +1858,13 @@ static void Scl_DoArith(uint16_t opc, int argc, char *argv[])
     const char *dst;
     char nb[SCL_CFG_VAR_VALUE_MAX];
 
-    if (opc == SCL_OP_INEG)
+    if ((opc == SCL_OP_INEG) || (opc == SCL_OP_INOT))
     {
-        if (argc < 2) { Scl_MsgErr("ineg: 需要 2 参 (a dst)"); return; }
+        const char *nm = (opc == SCL_OP_INEG) ? "ineg" : "inot";
+        if (argc < 2) { Scl_MsgErr("%s: 需要 2 参 (a dst)", nm); return; }
         a = Scl_NumText(argv[0], &oka);
         dst = argv[1];
-        r = -a;
+        r = (opc == SCL_OP_INEG) ? -a : (~a);
     }
     else
     {
@@ -1849,6 +1886,11 @@ static void Scl_DoArith(uint16_t opc, int argc, char *argv[])
             if (b == 0) { Scl_MsgErr("imod: 除数为 0"); return; }
             r = a % b;
             break;
+        case SCL_OP_IAND: r = a & b; break;
+        case SCL_OP_IOR:  r = a | b; break;
+        case SCL_OP_IXOR: r = a ^ b; break;
+        case SCL_OP_SHL:  r = (int32_t)((uint32_t)a << (b & 31)); break;
+        case SCL_OP_SHR:  r = (int32_t)((uint32_t)a >> (b & 31)); break;  /* 逻辑右移 */
         default: return;
         }
     }
@@ -1927,6 +1969,16 @@ static void Scl_StepOnce(void)
         Scl_Finish(0);   /* 程序末尾 → 自然完成 */
         return;
     }
+    /* 步进保护（SCL_CFG_STEP_LIMIT=0 关闭）：防 while(true) 死循环 */
+    s_steps++;
+#if (SCL_CFG_STEP_LIMIT != 0u)
+    if (s_steps > (uint32_t)SCL_CFG_STEP_LIMIT)
+    {
+        Scl_MsgErr("步进超限(>%u)，已中断（防死循环）", (unsigned int)SCL_CFG_STEP_LIMIT);
+        Scl_Finish(1);
+        return;
+    }
+#endif
     opc = (uint16_t)(((uint16_t)s_bc[s_pc] << 8) | s_bc[s_pc + 1u]);
     aoff = (uint16_t)(((uint16_t)s_bc[s_pc + 2u] << 8) | s_bc[s_pc + 3u]);
     next = (uint16_t)(s_pc + 4u);
@@ -1976,7 +2028,8 @@ static void Scl_StepOnce(void)
         return;
 
     default:
-        if ((opc >= SCL_OP_IADD) && (opc <= SCL_OP_BTEST))
+        if (((opc >= SCL_OP_IADD) && (opc <= SCL_OP_BTEST)) ||
+            ((opc >= SCL_OP_IAND) && (opc <= SCL_OP_SHR)))
         {
             /* 内置运算指令（无独立命令节点） */
             int argc = Scl_ArgRestore(aoff);
@@ -1984,7 +2037,8 @@ static void Scl_StepOnce(void)
             {
                 Scl_MsgErr("运算参数错误(%d)", argc);
             }
-            else if ((opc >= SCL_OP_IADD) && (opc <= SCL_OP_INEG))
+            else if (((opc >= SCL_OP_IADD) && (opc <= SCL_OP_INEG)) ||
+                     ((opc >= SCL_OP_IAND) && (opc <= SCL_OP_SHR)))
             {
                 Scl_DoArith(opc, argc, s_argv);
             }
@@ -2088,6 +2142,7 @@ uint8_t SCL_Run(const char *script)
 
     /* 启动执行 */
     s_pc      = 0u;
+    s_steps   = 0u;
     s_wait_cmd = NULL;
     s_abort   = 0u;
     s_ret     = 0u;
