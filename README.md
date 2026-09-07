@@ -14,7 +14,8 @@
 - 普通调用 `cmd a b`（空白分隔；含空格的参数用引号包裹为整体）
 - **内置 int/bool 运算指令**（参考 C，保留字）：
   `iadd isub imul idiv imod ineg`（写回变量）/ `ieq ine igt ige ilt ile`
-  `band bor bnot btest`（结果进 G_RETURN）
+  `band bor bnot btest`（结果进 G_RETURN）/ `iand ior ixor inot shl shr`（位运算，写回变量）
+- 字面量支持十进制 / `0x` 十六进制 / `0b` 二进制
 - **汇编式控制流**：`label 名` 设跳转点；`jump [-a] 名`（-a=G_RETURN 真跳）
 - **文本→字节码**：指令固定 4 字节（opc + 参数偏移），命令注册自动分配 opcode
 - **异步/跨主循环步进**：命令可带同步信号回调，适配"命令耗时等待硬件"
@@ -26,6 +27,7 @@
 |------|------|
 | `doc/arc/shell-command-link-design.md` | 设计（含左右脑互博、内存估算、变更记录） |
 | `doc/arc/v02-typed-vars-design.md` | **v0.2 设计**：类型化参数缓存/多类型变量/int·bool 运算指令 |
+| `doc/arc/v03-brainstorm.md` / `v03-plan.md` | **v0.3 头脑风暴/计划**：完整表达式·for·位运算·循环保护·交互终端 |
 | `doc/arc/script2chain-design.md` | 现代脚本→指令链 转译器设计（语法与映射） |
 | `doc/spec/scl-spec.md` | 语法/API/移植/裁剪规格 + 集成示例 |
 | `doc/other/scl-test-report.md` | 全量测试报告（大小/速度/可靠性/重复性/复杂度） |
@@ -85,24 +87,29 @@ python tools/s2c_test.py                                      # 转译器测试(
 
 ```s2c
 # 注释支持 # // /* */
-var int sp = 100                    # 显式类型；省略则编译器推断（默认 4 槽/名≤8/值≤15）
+var int sp = 100                    # 显式类型；省略则推断（bool/int/flag/string，0x/0b→int）
 var bool running = true
 var flag f = -x
 var int n = 0
-while (n < 3) {                     # do-while：比较表达式 n<3 → ilt + label/jump
+while (n < 3) {                     # 比较表达式 n<3 → ilt + label/jump
     n = n + 1                       # 算术赋值 → iadd n 1 n
     echo("n=${n}")
 }
-if (mode == 1) { echo("ok") } else { echo("ng") }   # 原子比较表达式
-if (!running) { echo("halt") }     # 一元取反
+for (var int i=0; i < 5; i = i + 1) {   # for(init;cond;step) 标准 while 语义
+    if (i == 2) { continue }        # continue → step
+    if (i == 4) { break }           # break 退出循环
+    echo("i=${i}")
+}
+if (mode == 1 && running) { echo("ok") } else { echo("ng") }  # && || ! 括号短路
+if ((n & 0x1) == 1) { echo("odd") }     # 位运算字面量
+x = (a & 0xFF) | 0x10               # 多运算符算术/位：a+b*2、a<<2|1 …（临时变量自动管理）
 if { echo("沿用G_RETURN") }         # 无条件 if 也可用
 fn not_done() { demo_inc() }        # 用户函数作条件（内联）
-while (not_done()) { echo("step", ${sp}) }
 ret(1)                              # 置 G_RETURN（默认映射 setret，可配）
 ```
 
-> 条件表达式范围：原子条件（比较/`!b`/变量/字面量）已支持；
-> `&& ||` 与多运算符算术留待 v0.3（会报明确错误）。
+> v0.3：条件/赋值完整表达式（`&& || !`、括号、`+ - * / %`、`& | ^ ~ << >>`）、
+> `for` 与 `break/continue` 均已支持；循环有 `SCL_CFG_STEP_LIMIT` 步进保护兜底。
 
 ## 裁剪
 
