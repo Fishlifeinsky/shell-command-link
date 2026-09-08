@@ -66,6 +66,9 @@ def test_unit():
     unit_exact("const int LIMIT=10", "var const int LIMIT=10", "const 显式类型顶层")
     unit_exact("const LIMIT=10", "var const int LIMIT=10", "const 推断类型 int")
     unit_exact("const DBG=true", "var const bool DBG=true", "const 推断类型 bool")
+    # 顶层 'var const' 别名（与 const 等价，块内禁）
+    unit_exact("var const int LIMIT=10", "var const int LIMIT=10", "var const 显式类型顶层")
+    unit_exact("var const LIMIT=10", "var const int LIMIT=10", "var const 推断类型 int")
 
     # 原子条件：比较 → 运算指令；bool/变量 → btest
     unit_exact("if (mode == 1) { echo(a) } else { echo(b) }",
@@ -134,6 +137,12 @@ def test_unit():
                'var string st=idle;seq ${st} ok;jump -a L1;echo N;jump L2;label L1;echo Y;label L2',
                "string 状态 == → seq")
 
+    # else if 链（v0.3：可 else if）→ 嵌套 if 线性转译
+    unit_exact("var int x=1\nif (x==1) { echo(a) } else if (x==2) { echo(b) } else { echo(c) }",
+               "var int x=1;ieq x 1;jump -a L1;ieq x 2;jump -a L3;echo c;jump L4;"
+               "label L3;echo b;label L4;jump L2;label L1;echo a;label L2",
+               "if/else if/else → 嵌套 if 转译")
+
 
 def unit_err(src, keyword, msg):
     try:
@@ -151,6 +160,7 @@ def test_error():
     unit_err("var int x=1234567890123456", "过长", "变量字面值 >15 报错")
     unit_err("fn a(){ a() }\na()", "递归", "fn 递归报错")
     unit_err("if(true){ const int a=1 }", "仅允许顶层", "const 不允许在块内")
+    unit_err("if(true){ var const int a=1 }", "仅允许顶层", "var const 不允许在块内")
     unit_err('echo("unclosed', "未闭合", "字符串未闭合报错")
     unit_err("add(1,2", "')'", "缺右括号报错")
     unit_err("x 3", "需要 '('", "裸标识符语句报错")

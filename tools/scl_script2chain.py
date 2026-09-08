@@ -259,11 +259,11 @@ class Parser:
         kw = t.text
 
         if kw == "var":
-            return self.parse_var()
+            return self.parse_var(top=top)
         if kw == "const":
             if not top:
                 raise S2CError("const 常量声明仅允许顶层", t.line, t.col)
-            return self.parse_var(is_const=True)
+            return self.parse_var(is_const=True, top=top)
         if kw == "free":
             return self.parse_free()
         if kw == "if":
@@ -317,10 +317,17 @@ class Parser:
             raise S2CError("命令 %r 后需要 '('（如 %s(...)）" % (kw, kw), t.line, t.col)
         return ("call", kw, args)
 
-    def parse_var(self, is_const=False):
-        # 支持 'var <type> <name>=<value>' 或顶层 'const <type> <name>=<value>'
-        # （type ∈ bool/int/flag/string，可省略→自动推断）
+    def parse_var(self, is_const=False, top=False):
+        # 支持 'var <type> <name>=<value>'、顶层 'const <type> <name>=<value>'、
+        # 以及顶层 'var const <type> <name>=<value>'（type 可省略→自动推断）
         self.next()   # 消费 var / const
+        if (not is_const) and self.at("ID", "const"):
+            # 'var const ...'：只读常量声明，仅允许顶层（与 const 关键字一致）
+            if not top:
+                t = self.cur()
+                raise S2CError("const 常量声明仅允许顶层", t.line, t.col)
+            is_const = True
+            self.next()
         t = self.cur()
         typ = None
         if t.kind == "ID" and t.text in ("bool", "int", "flag", "string"):
