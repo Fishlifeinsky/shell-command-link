@@ -155,15 +155,19 @@ var int sp = 100                    # 显式类型；省略则推断（bool/int/
 var bool running = true
 var flag f = -x
 var int n = 0
-while (n < 3) {                     # 比较表达式 n<3 → ilt + label/jump
+while (n < 3) {                     # 标准 while：先判再跑 → ilt + label/jump
     n = n + 1                       # 算术赋值 → iadd n 1 n
     echo("n=${n}")
 }
-for (var int i=0; i < 5; i = i + 1) {   # for(init;cond;step) 标准 while 语义
-    if (i == 2) { continue }        # continue → step
-    if (i == 4) { break }           # break 退出循环
-    echo("i=${i}")
+do {                                # do{..}while：先跑一次再判
+    n = n + 1
+} while (n < 3)
+when (n) {                          # when 值匹配（Kotlin 风格；主语可选）
+    1, 2 -> echo("small")
+    3    -> echo("three")
+    else -> echo("big")
 }
+when { n == 3 -> echo("guard") }    # 无主语 = 守卫链（依次判条件）
 if (mode == 1 && running) { echo("ok") } else { echo("ng") }  # && || ! 括号短路
 if ((n & 0x1) == 1) { echo("odd") }     # 位运算字面量
 x = (a & 0xFF) | 0x10               # 多运算符算术/位：a+b*2、a<<2|1 …（临时变量自动管理）
@@ -172,8 +176,9 @@ fn not_done() { demo_inc() }        # 用户函数作条件（内联）
 ret(1)                              # 置 G_RETURN（默认映射 setret，可配）
 ```
 
-> v0.3：条件/赋值完整表达式（`&& || !`、括号、`+ - * / %`、`& | ^ ~ << >>`）、
-> `for` 与 `break/continue` 均已支持；循环有 `SCL_CFG_STEP_LIMIT` 步进保护兜底。
+> v0.3：条件/赋值完整表达式（`&& || !`、括号、`+ - * / %`、`& | ^ ~ << >>`）均已支持；
+> v0.4：`while` 改标准先判、新增 `do{}while` 与 `when`（Kotlin 风格），`for` 已移除
+>（用 `var` 初始化 + `while` 改写）；`break/continue` 作用于最近 while/do；循环有 `SCL_CFG_STEP_LIMIT` 兜底。
 
 ## 裁剪
 
