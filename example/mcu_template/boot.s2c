@@ -1,0 +1,29 @@
+# 上电自检脚本示例（现代语法；固定脚本 → const 程序最省 RAM）
+# 生成：python tools/scl_emit_c.py example/mcu_template/boot.s2c -o build/boot_prog.c
+# 固件里：extern const scl_prog_t scl_boot_prog; SCL_RunProg(&scl_boot_prog);
+# 注意：同时存活的变量数受工具预算限制（默认 4，可用 --var-max 调大，见 scl_emit_c 帮助）
+
+# 只读常量（顶层；也可写 var const）
+const int LIM = 5
+
+var int r = 0
+var int i = 0
+var int sum = 0
+
+# 简单自检：算术 + 比较 + 分支
+r = LIM + 1
+if (r == 6) {
+    echo("boot-const-ok")
+} else {
+    echo("boot-const-fail")
+}
+
+# 循环示例：跑 3 圈累加
+while (i < 3) {
+    sum = sum + i
+    i = i + 1
+}
+if (sum == 3) {
+    echo("boot-loop-ok")
+}
+echo("boot-done")
