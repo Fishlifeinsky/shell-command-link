@@ -69,6 +69,7 @@ scl/Src/scl_priv.h             多模块内部共享头（勿在应用层使用�
 tools/scl_script2chain.py     现代语法脚本 → SCL 指令链（Python 转译器）
 tools/scl_emit_c.py           SCL 脚本 → const C 程序（Flash 只读，省 RAM）
 tools/s2c_test.py             转译器测试（精确比对 + 真实回喂 + emit-c）
+tools/scl_build.py            统一构建/测试/尺寸（PC 全量 + ARM 裁剪矩阵/尺寸）
 example/                      PC 示例（main.c 全量测试 / chain_runner 回喂 /
                               scl_shell 交互 Shell / sim_uart 串口模拟 / s2c/*.s2c）
 example/mcu_template/         MCU(STM32) 移植模板（HAL port + main 骨架 + PC 自检）
@@ -94,7 +95,20 @@ int main(void) {
 > v0.2 破坏性变更：运行时 `var` 需显式类型（v0.1 的 `var x=v` 改为 `var <type> x=v`）；
 > 现代源层可省略类型（编译器自动推断）。旧指令链需补类型后方可运行。
 
-## 构建示例（PC 测试）
+## 构建 / 测试（推荐：一键脚本）
+
+```bash
+python tools/scl_build.py            # all：PC 全量测试 + 裁剪矩阵 + ARM 尺寸
+python tools/scl_build.py test       # 仅 PC 全量（默认档/desc关/MCU骨架/s2c）
+python tools/scl_build.py check      # ARM 裁剪开关零告警矩阵（需 arm-none-eabi）
+python tools/scl_build.py sizes      # ARM(Cortex-M4) 各裁剪档 Flash/RAM（需 arm-none-eabi）
+```
+
+脚本用 Python `subprocess` 编译并运行（兼容透明加密环境：编译产物只有白名单进程能读明文），
+自动探测 `gcc`/`arm-none-eabi-gcc`，缺 ARM 工具时 check/sizes 自动跳过。
+各裁剪档宏集合见 `doc/other/scl-config-profiles.md`。
+
+## 构建示例（PC 测试，手工）
 
 ```bash
 gcc -O2 -Wall -Wextra -I scl/Inc -I scl/Src -I example \
