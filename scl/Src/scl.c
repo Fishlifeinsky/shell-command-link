@@ -400,16 +400,15 @@ static uint8_t Scl_LitType(const char *s, uint16_t len, int32_t *iv)
 }
 #endif /* SCL_CFG_RUN_TEXT_EN */
 
-/* 十进制/十六进制输出与消息（含内部小格式化 %s %c %d %u %x） */
+#if (SCL_CFG_MSG_EN == 1u)
+/* 十进制输出（Scl_VMsg 内部小格式化 %d/%u 用；MSG_EN=0 整段裁掉，无死代码） */
 static void Scl_PutU32(uint32_t v)
 {
     char tmp[10u];
     int  i = 0;
     if (v == 0u)
     {
-#if (SCL_CFG_MSG_EN == 1u)
         SCL_Port_PutChar('0');
-#endif
         return;
     }
     while (v > 0u)
@@ -421,13 +420,10 @@ static void Scl_PutU32(uint32_t v)
     while (i > 0)
     {
         i--;
-#if (SCL_CFG_MSG_EN == 1u)
         SCL_Port_PutChar(tmp[i]);
-#endif
     }
 }
 
-#if (SCL_CFG_MSG_EN == 1u)
 static void Scl_VMsg(const char *fmt, va_list ap)
 {
     while (*fmt != '\0')
