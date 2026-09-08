@@ -51,6 +51,7 @@ extern "C" {
 
 #include <stdint.h>
 #include <stdbool.h>
+#include <stddef.h>   /* NULL（正规来源；严格工具链如 arm-none-eabi 下 stdio 不保证提供） */
 
 /* ============================ 类型常量 ============================ */
 
