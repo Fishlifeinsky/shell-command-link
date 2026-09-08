@@ -1349,9 +1349,13 @@ static uint8_t Scl_TypeOfName(const char *s, uint16_t n)
 
 #if (SCL_CFG_CMDDESC_EN != 0u)
 static void Scl_DescPrintUsage(const scl_cmd_t *nd);     /* 前向：供 help 输出模板概要 */
-static void Scl_DescPrintDetail(const scl_cmd_t *nd);    /* 前向：help <cmd> 命令明细 */
+#endif
+#if ((SCL_CFG_CMDDESC_EN != 0u) && (SCL_CFG_MSG_EN == 1u))
+static void Scl_DescPrintDetail(const scl_cmd_t *nd);    /* 前向：help <cmd> 命令明细（消息输出用） */
 #endif
 
+#if (SCL_CFG_MSG_EN == 1u)
+/* ============ help 输出（全览/单命令文档表）：仅消息开时编译，关消息整段裁掉省 ROM ============ */
 static void Scl_DoHelp(void)
 {
     scl_cmd_t *node;
@@ -1521,6 +1525,7 @@ static void Scl_DoHelpRaw(const char *raw)
     while ((*p != '\0') && !Scl_IsSp(*p)) { p++; }
     Scl_HelpOne(nb, (uint16_t)(p - nb));
 }
+#endif /* SCL_CFG_MSG_EN：help 文档/输出整段 */
 
 /* 数字解析（命令内取值用，无 libc）：文本 → int32；失败返回 def */
 int32_t SCL_ParseInt(const char *s, int32_t def)
@@ -1557,6 +1562,7 @@ static void Scl_DescPrintUsage(const scl_cmd_t *nd)
     Scl_Msg("\r\n");
 }
 
+#if (SCL_CFG_MSG_EN == 1u)
 /* 打印单命令完整明细（help <cmd>；esp_console 风格：help+usage+逐参数说明） */
 static void Scl_DescPrintDetail(const scl_cmd_t *nd)
 {
@@ -1581,6 +1587,7 @@ static void Scl_DescPrintDetail(const scl_cmd_t *nd)
         }
     }
 }
+#endif /* SCL_CFG_MSG_EN：DescPrintDetail 仅供 help 输出 */
 
 /* 单参数与模板匹配：0=通过。string 模板接受任意；int 模板接受 int 或可解析的文本；
    bool/flag 模板要求类型一致 */
@@ -2112,7 +2119,9 @@ static void Scl_StepOnce(void)
         return;
 
     case SCL_OP_HELP:
+#if (SCL_CFG_MSG_EN == 1u)
         Scl_DoHelpRaw(Scl_ArgLoad(aoff));   /* help [cmd]：空=全览; 带名=单命令明细 */
+#endif
         s_pc = next;
         return;
 
