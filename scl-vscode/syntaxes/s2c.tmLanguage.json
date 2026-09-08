@@ -1,0 +1,84 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "SCL Script (s2c)",
+  "scopeName": "source.scl-s2c",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#varref" },
+    { "include": "#numbers" },
+    { "include": "#types" },
+    { "include": "#keywords" },
+    { "include": "#operators" },
+    { "include": "#flag" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "match": "#.*$", "name": "comment.line.number-sign.scl-s2c" },
+        { "match": "//.*$", "name": "comment.line.double-slash.scl-s2c" },
+        {
+          "begin": "/\\*",
+          "end": "\\*/",
+          "name": "comment.block.scl-s2c"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "begin": "\"",
+          "end": "\"",
+          "name": "string.quoted.double.scl-s2c",
+          "patterns": [{ "include": "#varref" }]
+        },
+        {
+          "begin": "'",
+          "end": "'",
+          "name": "string.quoted.single.scl-s2c",
+          "patterns": [{ "include": "#varref" }]
+        }
+      ]
+    },
+    "varref": {
+      "match": "\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}",
+      "name": "variable.other.scl-s2c"
+    },
+    "numbers": {
+      "match": "\\b(0[xX][0-9a-fA-F]+|0[bB][01]+|[0-9]+)\\b",
+      "name": "constant.numeric.scl-s2c"
+    },
+    "types": {
+      "match": "\\b(bool|int|flag|string)\\b",
+      "name": "storage.type.scl-s2c"
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "match": "\\b(if|else|while|do|when|for|fn|ret|break|continue|var|const|free)\\b",
+          "name": "keyword.control.scl-s2c"
+        },
+        {
+          "match": "\\b(true|false)\\b",
+          "name": "constant.language.scl-s2c"
+        }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        {
+          "match": "(==|!=|<=|>=|&&|\\|\\||<<|>>|->)",
+          "name": "keyword.operator.scl-s2c"
+        },
+        {
+          "match": "[+\\-*/%&|^~<>=!]",
+          "name": "keyword.operator.scl-s2c"
+        }
+      ]
+    },
+    "flag": {
+      "match": "\\-[A-Za-z][A-Za-z0-9_]*\\b",
+      "name": "constant.other.flag.scl-s2c"
+    }
+  }
+}

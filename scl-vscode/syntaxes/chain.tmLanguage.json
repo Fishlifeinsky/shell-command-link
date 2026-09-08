@@ -1,0 +1,70 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "SCL Chain",
+  "scopeName": "source.scl-chain",
+  "patterns": [
+    { "include": "#strings" },
+    { "include": "#comments" },
+    { "include": "#varref" },
+    { "include": "#numbers" },
+    { "include": "#types" },
+    { "include": "#keywords" },
+    { "include": "#operators" },
+    { "include": "#flag" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "match": "#.*$", "name": "comment.line.number-sign.scl-chain" }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "begin": "\"",
+          "end": "\"",
+          "name": "string.quoted.double.scl-chain",
+          "patterns": [{ "include": "#varref" }]
+        },
+        {
+          "begin": "'",
+          "end": "'",
+          "name": "string.quoted.single.scl-chain",
+          "patterns": [{ "include": "#varref" }]
+        }
+      ]
+    },
+    "varref": {
+      "match": "\\$\\{[A-Za-z_][A-Za-z0-9_]*\\}",
+      "name": "variable.other.scl-chain"
+    },
+    "numbers": {
+      "match": "\\b(0[xX][0-9a-fA-F]+|0[bB][01]+|[0-9]+)\\b",
+      "name": "constant.numeric.scl-chain"
+    },
+    "types": {
+      "match": "\\b(bool|int|flag|string)\\b",
+      "name": "storage.type.scl-chain"
+    },
+    "keywords": {
+      "patterns": [
+        {
+          "match": "\\b(label|jump|var|free|help)\\b",
+          "name": "keyword.control.scl-chain"
+        },
+        {
+          "match": "\\b(iadd|isub|imul|idiv|imod|ineg|ieq|ine|igt|ige|ilt|ile|band|bor|bnot|btest|iand|ior|ixor|inot|shl|shr|seq|sneq)\\b",
+          "name": "keyword.operator.scl-chain"
+        }
+      ]
+    },
+    "operators": {
+      "match": "\\-a\\b|\\-b\\b",
+      "name": "keyword.operator.scl-chain"
+    },
+    "flag": {
+      "match": "\\-[A-Za-z][A-Za-z0-9_]*\\b",
+      "name": "constant.other.flag.scl-chain"
+    }
+  }
+}
