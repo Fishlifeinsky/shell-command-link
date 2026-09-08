@@ -187,7 +187,6 @@ static void TestVarsTyped(void)
 
 static void TestArith(void)
 {
-    int t;
     Section("1c. 内置 int/bool 运算指令");
 
     RunCap("var int n=0;iadd n 1 n;echo n=${n}", g_cap, sizeof(g_cap));
@@ -223,7 +222,7 @@ static void TestArith(void)
     CHECK(strstr(g_cap, "echo oryes") != NULL && strstr(g_cap, "echo no") == NULL,
           "bor(p,true) 真→jump");
 
-    t = RunCap("var int a=1;idiv a 0 a;echo after", g_cap, sizeof(g_cap));
+    RunCap("var int a=1;idiv a 0 a;echo after", g_cap, sizeof(g_cap));
     CHECK(strstr(g_cap, "除数为 0") != NULL && strstr(g_cap, "echo after") != NULL,
           "idiv 除 0 报错后继续");
     CHECK(SCL_VarCount() == 0 && SCL_Idle(), "运算错误后状态干净");
@@ -586,6 +585,32 @@ static void TestShell(void)
     Scl_Shell_Poll();
     Scl_CapEnd();
     CHECK(strstr(g_cap, "busy") != NULL, "busy 时新命令被忽略并提示");
+
+#if (SCL_CFG_CMDDESC_EN == 1u)
+    /* Tab 多候选：逐行列候选并带 desc 一行帮助（demo_inc/demo_reset） */
+    Scl_CapBegin(g_cap, sizeof(g_cap));
+    FeedStr("d\t");          /* 首词前缀歧义 → 先补公共前缀再列候选 */
+    Scl_CapEnd();
+    CHECK(strstr(g_cap, "demo_inc") != NULL && strstr(g_cap, "计数+1") != NULL &&
+          strstr(g_cap, "demo_reset") != NULL && strstr(g_cap, "计数清零") != NULL,
+          "Tab 多候选逐行带 desc 帮助");
+    FeedStr("\x15");         /* Ctrl-U 清行，避免污染后续输入 */
+
+    /* 参数位 Tab：首命令完整且带参数模板 → 提示 usage（不插入文本） */
+    Scl_CapBegin(g_cap, sizeof(g_cap));
+    FeedStr("demo_reset \t");
+    Scl_CapEnd();
+    CHECK(strstr(g_cap, "usage: demo_reset") != NULL && strstr(g_cap, "n:int") != NULL,
+          "参数位 Tab 提示命令 usage");
+    FeedStr("\x15");
+
+    /* Shell 内 help <cmd> 联动（走 SCL_Run → 单命令明细） */
+    Scl_CapBegin(g_cap, sizeof(g_cap));
+    ShellLine("help wait");
+    Scl_CapEnd();
+    CHECK(strstr(g_cap, "usage: wait") != NULL,
+          "Shell 内 help <cmd> 显示单命令明细");
+#endif /* SCL_CFG_CMDDESC_EN */
 
     /* quit 退出请求 */
     CHECK(Scl_Shell_QuitReq() == 0, "初始无退出请求");

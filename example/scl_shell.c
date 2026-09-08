@@ -192,6 +192,64 @@ static const char *const s_keywords[] = {
     "iand", "ior", "ixor", "inot", "shl", "shr", "seq", "sneq"
 };
 
+#if (SCL_CFG_CMDDESC_EN == 1u)
+/* 字节串比较（含结尾 \0；供命令查找，shell 无 libc） */
+static unsigned Sh_EqN(const char *a, const char *b, unsigned n)
+{
+    unsigned i;
+    for (i = 0u; i < n; i++)
+    {
+        if (a[i] != b[i]) { return 0u; }
+    }
+    return 1u;
+}
+
+/* 在注册命令链表中按精确名找命令（无则 NULL） */
+static const scl_cmd_t *Sh_FindCmd(const char *name)
+{
+    const scl_cmd_t *nd;
+    for (nd = SCL_CmdHead(); nd != NULL; nd = nd->next)
+    {
+        if (Sh_EqN(nd->name, name, Sh_StrLen(name) + 1u)) { return nd; }
+    }
+    return NULL;
+}
+
+/* 类型常量 → 类型名（本地映射, 与 scl.c 一致） */
+static const char *Sh_TypeName(uint8_t t)
+{
+    switch (t)
+    {
+    case SCL_T_BOOL: return "bool";
+    case SCL_T_INT:  return "int";
+    case SCL_T_FLAG: return "flag";
+    default:         return "string";
+    }
+}
+
+/* 打印命令 usage 行（参数模板；esp_console 风格提示） */
+static void Sh_PrintUsage(const scl_cmd_t *nd)
+{
+    const scl_cmd_desc_t *d = nd->desc;
+    int i;
+    Sh_Puts("usage: ");
+    Sh_Puts(nd->name);
+    if ((d != NULL) && (d->args != NULL))
+    {
+        for (i = 0; i < d->arg_cnt; i++)
+        {
+            const scl_arg_spec_t *a = &d->args[i];
+            Sh_Putc((a->opt != 0u) ? '[' : '<');
+            Sh_Puts(a->name);
+            Sh_Putc(':');
+            Sh_Puts(Sh_TypeName(a->type));
+            Sh_Putc((a->opt != 0u) ? ']' : '>');
+        }
+    }
+    Sh_Newline();
+}
+#endif /* SCL_CFG_CMDDESC_EN */
+
 /* 收集匹配 prefix 的命令名（注册命令 + 保留字）到 cand；
    返回匹配数。带 *nunique 供歧义提示（只记首个匹配名） */
 static int Sh_CollectCands(const char *prefix, char cand[][SCL_EX_SHELL_LINE_MAX],
@@ -324,6 +382,28 @@ static void Sh_Complete(void)
     }
     else
     {
+        /* 参数位置且非 ${：若首命令完整且带参数模板 → 提示 usage（不插入文本） */
+#if (SCL_CFG_CMDDESC_EN == 1u)
+        {
+            unsigned k = 0u;
+            const scl_cmd_t *hnd;
+            while ((k < wi) && !Sh_IsSp(s_line[k])) { k++; }
+            if ((k > 0u) && (k < SCL_EX_SHELL_LINE_MAX))
+            {
+                char hb[SCL_EX_SHELL_LINE_MAX];
+                for (i = 0u; i < k; i++) { hb[i] = s_line[i]; }
+                hb[k] = '\0';
+                hnd = Sh_FindCmd(hb);
+                if ((hnd != NULL) && (hnd->desc != NULL) &&
+                    (hnd->desc->args != NULL) && (hnd->desc->arg_cnt > 0))
+                {
+                    Sh_Newline();
+                    Sh_PrintUsage(hnd);
+                    Sh_Redraw();
+                }
+            }
+        }
+#endif
         return;   /* 参数位置且非 ${：不补全 */
     }
 
@@ -373,7 +453,7 @@ static void Sh_Complete(void)
             Sh_Redraw();
         }
     }
-    /* 列出候选 */
+    /* 列出候选：命令候选逐行（带 desc 一行帮助）；变量候选行内空格分隔 */
     Sh_Newline();
     for (i = 0u; i < (unsigned)n; i++)
     {
@@ -382,12 +462,26 @@ static void Sh_Complete(void)
             Sh_Puts("${");
             Sh_Puts(cand[i]);
             Sh_Puts("}");
+            Sh_Putc(' ');
         }
         else
         {
+            const char *h = NULL;
+#if (SCL_CFG_CMDDESC_EN == 1u)
+            const scl_cmd_t *m = Sh_FindCmd(cand[i]);
+            if ((m != NULL) && (m->desc != NULL) && (m->desc->help != NULL))
+            {
+                h = m->desc->help;
+            }
+#endif
             Sh_Puts(cand[i]);
+            if (h != NULL)
+            {
+                Sh_Puts(" — ");
+                Sh_Puts(h);
+            }
+            Sh_Newline();
         }
-        Sh_Putc(' ');
     }
     Sh_Newline();
     Sh_Redraw();
