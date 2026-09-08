@@ -1,12 +1,13 @@
-# 演示2：do-while 语义 while + 用户函数作条件（fn 每圈返回判断值）
+# 演示2：do{..}while(cond) 先跑一次再判 + 用户函数作条件（fn 每圈返回判断值）
 #
-# 语义：while(cond){body} 为 do-while —— body 先跑一次，之后每圈先跑 body
-#       再判 cond；cond 为真继续、为假退出。
-#       转译器输出 label/jump：label L; body; cond; jump -a L
+# 语义：do { body } while(cond) —— body 先跑一次，之后每圈先跑 body 再判 cond；
+#       cond 为真继续、为假退出。
+#       （while(cond) 为标准先判语义；需要“必跑一次”用 do..while）
+#       转译器输出 label/jump：label t; body; cond; jump -a t
 #
 # demo_reset(3) : 演示计数器清零并设目标 3
 # demo_inc()    : 计数+1；未达目标则置 G_RETURN=true（作为循环继续条件）
-# fn not_done() : 用户函数，作为 while 条件（编译期内联，每圈重跑）
+# fn not_done() : 用户函数，作为 do-while 条件（编译期内联，每圈重跑）
 
 var int sp = 100
 
@@ -16,8 +17,8 @@ fn not_done() {
 
 demo_reset(3)
 
-while (not_done()) {
+do {
     echo("step", ${sp})
-}
+} while (not_done())
 
 echo("loop-end")

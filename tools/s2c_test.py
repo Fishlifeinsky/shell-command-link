@@ -90,10 +90,19 @@ def test_unit():
                "label L1;setret 1;label L2;jump -a L3;echo B;jump L4;label L3;echo A;label L4",
                "if(||) else → 短路 or")
 
-    # do-while + 算术赋值
+    # while 标准先判 + do 先跑一次 + when（v0.4）
     unit_exact("var int n=0\nwhile (n < 3) { n = n + 1 }",
-               "var int n=0;label L1;iadd n 1 n;ilt n 3;jump -a L1",
-               "while(比较) + n=n+1 → iadd/ilt/label/jump")
+               "var int n=0;label L1;ilt n 3;jump -a L2;jump L3;label L2;iadd n 1 n;jump L1;label L3",
+               "while(比较) 标准先判 + n=n+1 → iadd/ilt/label/jump")
+    unit_exact("var int n=0\ndo { n = n + 1 } while (n < 2)",
+               "var int n=0;label L1;iadd n 1 n;label L2;ilt n 2;jump -a L1;label L3",
+               "do{..}while(比较) 先跑一次再判")
+    unit_exact("var int x=1\nwhen (x) { 1 -> echo(a); else -> echo(b) }",
+               "var int x=1;ieq x 1;jump -a L2;echo b;jump L1;label L2;echo a;jump L1;label L1",
+               "when(主语) 值匹配 + else → ieq/label 分支")
+    unit_exact("var int a=1\nvar int b=0\nwhen { a == 1 -> echo(y); else -> echo(n) }",
+               "var int a=1;var int b=0;ieq a 1;jump -a L2;echo n;jump L1;label L2;echo y;jump L1;label L1",
+               "when 守卫链(无主语)")
 
     # 无条件 if{} else（沿用 G_RETURN）
     unit_exact("if { } else { echo(n) }",
@@ -167,6 +176,7 @@ def test_error():
     unit_err("var if = 1", "保留", "变量名用保留字报错")
     unit_err("y = 3", "需先用 var", "赋值未声明目标报错")
     unit_err("echo(\"a\" + \"b\")", "不允许", "实参中算术/比较未支持")
+    unit_err("for (var int i=0; i<3; i=i+1) { echo(a) }", "已移除", "for 报迁移错")
 
 
 # ============================ 3. 回喂（真实 SCL 执行 chain_runner） ============================
@@ -297,9 +307,12 @@ def test_emitc():
          "if ((p && q) || !q) { echo(Y) } else { echo(N) }",
          ["echo Y", "RUN-OK"]),
         ("forb", None,
-         "for (var int i=0; i < 10; i = i + 1) {\n"
-         "  if (i == 2) { break }\n  echo(\"b${i}\")\n}\necho(over)",
+         "var int i=0\nwhile (i < 10) {\n"
+         "  if (i == 2) { break }\n  echo(\"b${i}\")\n  i = i + 1\n}\necho(over)",
          ["echo b0", "echo b1", "echo over", "RUN-OK"]),
+        ("whenc", None,
+         "var int x=2\nwhen (x) { 1 -> echo(one); 2, 3 -> echo(t23); else -> echo(other) }\necho(done)",
+         ["echo t23", "echo done", "RUN-OK"]),
         ("strst", None,
          'var string st="idle"\nif (st == "ok") { echo(N) } else { echo(Y) }\n'
          'st = "ok"\nif (st == "ok") { echo(now) }',
@@ -425,11 +438,12 @@ def test_feed():
                     "while (run && n < 2) { n = n + 1; echo(\"n=${n}\") }\n"
                     "echo(done)",
          ["echo n=1", "echo n=2", "echo done", "RUN-OK"]),
-        ("forb", "for (var int i=0; i < 10; i = i + 1) {\n"
-                 "  if (i == 2) { break }\n  echo(\"b${i}\")\n}\necho(over)",
+        ("forb", "var int i=0\nwhile (i < 10) {\n"
+                  "  if (i == 2) { break }\n  echo(\"b${i}\")\n  i = i + 1\n}\necho(over)",
          ["echo b0", "echo b1", "echo over", "RUN-OK"]),
-        ("forc", "for (var int i=0; i < 5; i = i + 1) {\n"
-                 "  if (i == 1) { continue }\n  echo(\"c${i}\")\n}",
+        ("forc", "var int i=0\nwhile (i < 5) {\n"
+                  "  if (i == 1) { i = i + 1; continue }\n"
+                  "  echo(\"c${i}\")\n  i = i + 1\n}",
          ["echo c0", "echo c2", "echo c3", "echo c4", "RUN-OK"]),
         ("wbrk", "var int n=0\nwhile (true) {\n  n = n + 1\n"
                  "  if (n >= 3) { break }\n  echo(\"w${n}\")\n}",
@@ -444,6 +458,16 @@ def test_feed():
          ["echo has", "RUN-OK"]),
         ("constst", "const int LIM=5\nvar int r=0\nr = LIM + 1\necho(\"r=${r} L=${LIM}\")",
          ["echo r=6 L=5", "RUN-OK"]),
+        ("dowh", "var int n=0\ndo { n = n + 1 } while (n < 3)\necho(\"n=${n}\")",
+         ["echo n=3", "RUN-OK"]),
+        ("when1", "var int x=2\nwhen (x) { 1 -> echo(one); 2, 3 -> echo(t23); else -> echo(other) }\necho(done)",
+         ["echo t23", "echo done", "RUN-OK"]),
+        ("whens", "var string st=\"busy\"\n"
+                  "when (st) { \"ok\" -> echo(sok); \"busy\", \"err\" -> echo(sbusy); else -> echo(sother) }\necho(e)",
+         ["echo sbusy", "echo e", "RUN-OK"]),
+        ("wheng", "var int a=3\nvar int b=0\n"
+                  "when { a > 3 -> echo(big); b == 0 -> echo(zero); else -> echo(rest) }\necho(end)",
+         ["echo zero", "echo end", "RUN-OK"]),
     ]
     for tag, src, subs in feeds:
         try:

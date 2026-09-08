@@ -1,17 +1,19 @@
-# 演示4（v0.3）：for/break/continue + 位运算/多运算符表达式 + 字符串·flag 状态比较
+# 演示4（v0.4）：while(标准先判)/break/continue + 位运算/多运算符表达式 + 字符串·flag 状态比较
 #
 # 语义（编译器降级为 label/jump + 内置运算指令）：
-#   for(init;cond;step)  标准 while 先判（先判再跑）
-#   continue → 跳到 step；break → 退出循环
+#   while(cond)  标准先判（先判再跑）；continue → 重判条件；break → 退出
+#   for 已移除：用 var 初始化 + while 表达（continue 前需自行步进）
 #   (i & 1) == 1  条件两侧的算术/位括号
 #   st == "busy"  string 状态文本比较（seq）
 #   dbg == "-d"   flag 状态比较（seq）
 
 var int total = 0
-for (var int i = 1; i <= 10; i = i + 1) {
-    if ((i & 1) == 1) { continue }   # 跳过奇数
-    if (i > 8) { break }             # 超过 8 退出
-    total = total + i                # 2+4+6+8 = 20
+var int i = 1
+while (i <= 10) {
+    if ((i & 1) == 1) { i = i + 1; continue }   # 跳过奇数（先步进再 continue）
+    if (i > 8) { break }                         # 超过 8 退出
+    total = total + i                            # 2+4+6+8 = 20
+    i = i + 1
 }
 echo("even-sum=${total}")
 

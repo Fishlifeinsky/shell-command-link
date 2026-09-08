@@ -14,7 +14,10 @@ scl_script2chain.py — 现代语法脚本 -> SCL 指令链 转译器（纯标�
   - 置返回： ret(1|0|true|false)    （映射到目标“置 G_RETURN 命令”，见 --ret-setter）
   - if：     if (条件) { } [else { }]（可 else if）
              无条件形式： if { } else { }   —— 沿用当前 G_RETURN
-  - while：  while (条件) { }       （do-while 语义：body 先跑一次再判）
+  - while：  while (条件) { }       （标准语义：先判再跑；continue→重判、break→退出）
+  - do：     do { } while (条件)    （先跑一次再判；continue→重判、break→退出）
+  - when：   when [(主语)] { 匹配[,匹配] -> 体; else -> 体 }（Kotlin 风格；无主语=守卫链）
+  - for：     已移除（用 var 初始化 + while/do 改写；旧脚本会得到明确报错）
   - 函数：   fn 名 (参1,参2) { 语句 }   —— 编译期内联展开（文字替换），可用作条件
 
 SCL 运行时（v4）已把 if/while 文本移除，控制流改用汇编式：
@@ -29,7 +32,8 @@ import argparse
 # ============================ 保留字 ============================
 
 RESERVED_CMD = {"if", "while", "var", "free", "help", "label", "jump"}  # 运行时/关键字
-SYNTAX_WORDS = {"else", "fn", "ret", "true", "false", "const"}              # 语法字
+SYNTAX_WORDS = {"else", "fn", "ret", "true", "false", "const",
+                "do", "when", "for"}       # 语法字
 
 
 # ============================ 错误 ============================
@@ -153,10 +157,10 @@ def tokenize(src):
             adv()
             continue
 
-        # 比较/赋值/逻辑/算术/位/负号（两字符合并；单字符各自成 token）
+        # 比较/赋值/逻辑/算术/位/负号/箭头（两字符合并；单字符各自成 token）
         if ch in "=<>!-+*/%&|^~":
             two = src[i:i + 2]
-            if two in ("==", "!=", "<=", ">=", "&&", "||", "<<", ">>"):
+            if two in ("==", "!=", "<=", ">=", "&&", "||", "<<", ">>", "->"):
                 toks.append(Tok(two, two, l0, c0))
                 adv(2)
             else:
@@ -270,8 +274,13 @@ class Parser:
             return self.parse_if()
         if kw == "while":
             return self.parse_while()
+        if kw == "do":
+            return self.parse_do()
+        if kw == "when":
+            return self.parse_when()
         if kw == "for":
-            return self.parse_for()
+            raise S2CError("for 已移除：请用 var 初始化 + while(标准先判) 或 do{..}while(先跑一次) 改写",
+                           t.line, t.col)
         if kw == "break" or kw == "continue":
             self.next()
             return (kw,)
@@ -610,51 +619,116 @@ class Parser:
         body = self.parse_block()
         return ("while", cond, body)
 
-    # ---- v0.3 for(init; cond; step) ----
-    def parse_for(self):
-        self.next()                       # for
-        if not self.at("(", text="("):
-            t = self.cur()
-            raise S2CError("for 需要 for(init;cond;step){...}", t.line, t.col)
-        self.next()
-        self.skip_nl()
-        init = None
-        if not self.at(";", text=";"):
-            init = self.parse_for_istep("for 初始化")
-        self.expect(text=";", what="';'")
-        self.skip_nl()
-        cond = None
-        if not self.at(";", text=";"):
-            cond = self.parse_cond()
-        self.expect(text=";", what="';'")
-        self.skip_nl()
-        step = None
-        if not self.at(")", text=")"):
-            step = self.parse_for_istep("for 步进")
-        self.expect(text=")", what="')'")
+    # ---- v0.4 do { body } while(cond)：先跑一次再判（原 while 的 do-while 语义显式化） ----
+    def parse_do(self):
+        self.next()                       # do
         body = self.parse_block()
-        return ("for", init, cond, step, body)
-
-    def parse_for_istep(self, what):
-        """for 的 init/step：空 / var 声明 / 赋值 / 命令调用"""
-        t = self.cur()
-        if t.kind == "ID" and t.text == "var":
-            return self.parse_var()
-        if t.kind != "ID":
-            raise S2CError("%s需要 var/赋值/调用" % what, t.line, t.col)
-        if t.text in RESERVED_CMD or t.text in SYNTAX_WORDS:
-            raise S2CError("%s不能为关键字 %r" % (what, t.text), t.line, t.col)
-        kw = t.text
+        self.skip_nl()
+        if not self.at("ID", "while"):
+            t = self.cur()
+            raise S2CError("do 需要 do { } while(条件)", t.line, t.col)
         self.next()
-        if self.at("=", text="="):
-            self.next()
-            self.skip_nl()
-            return ("assign", kw, self.parse_expr())
+        self.skip_nl()
+        self.expect(text="(", what="'('")
+        cond = self.parse_cond()
+        self.expect(text=")", what="')'")
+        return ("do", cond, body)
+
+    # ---- when（参考 Kotlin；主语可选）----
+    def parse_when(self):
+        self.next()                       # when
+        subj = None
         if self.at("(", text="("):
             self.next()
-            args = self.parse_args_after_open()
-            return ("call", kw, args)
-        raise S2CError("%s需要赋值或调用（如 i=i+1）" % what, t.line, t.col)
+            self.skip_nl()
+            subj = self.parse_when_atom("when 主语")
+            self.skip_nl()
+            self.expect(text=")", what="')'")
+        self.expect(text="{", what="'{'")
+        arms = []
+        saw_else = False
+        self.skip_sep()
+        while not self.at("}", text="}"):
+            if self.at("EOF"):
+                t = self.cur()
+                raise S2CError("when 块未闭合（缺 '}'）", t.line, t.col)
+            if self.at("ID", "else"):
+                if saw_else:
+                    t = self.cur()
+                    raise S2CError("when 只能有一个 else 分支", t.line, t.col)
+                saw_else = True
+                self.next()
+                self.skip_nl()
+                if not self.at("->", text="->"):
+                    t = self.cur()
+                    raise S2CError("when 的 else 分支需要 '->'", t.line, t.col)
+                self.next()
+                arms.append(("else", None, self.parse_when_body()))
+            elif subj is None:
+                # 无主语：守卫链（依次判条件）
+                cond = self.parse_cond()
+                self.skip_nl()
+                self.expect(text="->", what="'->'")
+                arms.append(("guard", cond, self.parse_when_body()))
+            else:
+                # 有主语：匹配值（可多个，逗号分隔）
+                matchers = []
+                while not self.at("->", text="->"):
+                    if self.at("}", text="}") or self.at("EOF"):
+                        t = self.cur()
+                        raise S2CError("when 分支缺少 '->'", t.line, t.col)
+                    matchers.append(self.parse_when_atom("匹配值"))
+                    if self.at(",", text=","):
+                        self.next()
+                        self.skip_nl()
+                self.next()               # ->
+                arms.append(("match", matchers, self.parse_when_body()))
+            self.skip_sep()
+        self.next()                       # }
+        if not arms:
+            t = self.cur()
+            raise S2CError("when 至少需要一个分支", t.line, t.col)
+        return ("when", subj, arms)
+
+    def parse_when_atom(self, what):
+        """when 主语/匹配值：变量/字面量/字符串/${}引用/flag(-x)/bool —— 原子，不支持复合表达式"""
+        t = self.cur()
+        if t.kind == "ID":
+            if t.text in ("true", "false"):
+                self.next()
+                return ("bool", t.text == "true")
+            if t.text in RESERVED_CMD or t.text in SYNTAX_WORDS:
+                raise S2CError("%s不能为关键字 %r" % (what, t.text), t.line, t.col)
+            self.next()
+            return ("var", t.text)
+        if t.kind == "NUM":
+            self.next()
+            return ("lit", t.text)
+        if t.kind == "STR":
+            self.next()
+            return ("str", t.text)
+        if t.kind == "VARREF":
+            self.next()
+            return ("varref", t.text)
+        if t.kind == "-" or t.text == "-":
+            self.next()
+            u = self.cur()
+            if u.kind in ("NUM", "ID"):
+                self.next()
+                return ("lit", "-" + u.text)
+            raise S2CError("%s：负号后需要数字/标识" % what, t.line, t.col)
+        raise S2CError("%s无法解析 %r（仅支持变量/字面量/字符串）" % (what, t.text),
+                      t.line, t.col)
+
+    def parse_when_body(self):
+        """when 分支体：{块} 或单语句（其后须 换行/; / }）"""
+        if self.at("{", text="{"):
+            return self.parse_block()
+        body = [self.parse_statement()]
+        t = self.cur()
+        if t.kind in ("NL", ";", "}"):
+            return body
+        raise S2CError("when 分支体后需要换行/分号或 {} 块", t.line, t.col)
 
     def parse_fndef(self):
         t = self.next()
@@ -827,8 +901,10 @@ class Compiler:
             self.emit_if(st, lines, vs, exp_stack)
         elif k == "while":
             self.emit_while(st, lines, vs, exp_stack)
-        elif k == "for":
-            self.emit_for(st, lines, vs, exp_stack)
+        elif k == "do":
+            self.emit_do(st, lines, vs, exp_stack)
+        elif k == "when":
+            self.emit_when(st, lines, vs, exp_stack)
         elif k in ("break", "continue"):
             if not self._loop:
                 raise S2CError("%s 只能在循环内使用" % k)
@@ -1125,78 +1201,125 @@ class Compiler:
             lines.extend(self.code(elsel, vs, exp_stack))
             lines.append("label " + le)
 
-    @staticmethod
-    def uses_bc(stmts):
-        """当前作用域（body）是否用到 break/continue（嵌套 while/for 内的归内层，不计）"""
-        if not stmts:
-            return False
-        for st in stmts:
-            k = st[0]
-            if k in ("break", "continue"):
-                return True
-            if k == "if":
-                if Compiler.uses_bc(st[2]) or Compiler.uses_bc(st[3]):
-                    return True
-        return False
-
-    # ---- while 转译（do-while：body 先跑再判；label+条件 jump） ----
+    # ---- while(cond) 转译：标准先判再跑（continue→条件, break→出口） ----
     def emit_while(self, st, lines, vs, exp_stack):
         _, cond, body = st
-        lt = self.new_label()
+        lc = self.new_label()    # 条件 / 回跳（continue 落此）
+        lb = self.new_label()    # body 入口
+        le = self.new_label()    # 出口（break 落此）
         condl = []
         if cond[0] == "bool":
             if cond[1]:
-                self.warnings.append(
-                    "while(true) 为 do-while 且无终止条件，将循环到外部强制中止")
+                self.warnings.append("while(true) 无终止条件，将循环到外部强制中止（步进保护兜底）")
                 condl.append(self.emit_call(self.ret_setter, ["1"]))
             else:
                 condl.append(self.emit_call(self.ret_setter, ["0"]))
         else:
             self.emit_cond(cond, condl, vs, exp_stack)
-
-        if Compiler.uses_bc(body):
-            # body 含 break/continue：提供 break 标签（continue 指向 lt）
-            lb = self.new_label()
-            lines.append("label " + lt)
-            self._loop.append({"break": lb, "continue": lt})
-            lines.extend(self.code(body, vs, exp_stack))
-            self._loop.pop()
-            lines.extend(condl)
-            lines.append("jump -a " + lt)
-            lines.append("label " + lb)
-        else:
-            lines.append("label " + lt)
-            lines.extend(self.code(body, vs, exp_stack))
-            lines.extend(condl)
-            lines.append("jump -a " + lt)
-
-    # ---- for(init;cond;step) 转译（标准 while 语义：先判再跑） ----
-    def emit_for(self, st, lines, vs, exp_stack):
-        _, init, cond, step, body = st
-        if init is not None:
-            lines.extend(self.code([init], vs, exp_stack))
-        lc = self.new_label()    # cond / 回跳
-        lbb = self.new_label()   # body 真跳
-        ls = self.new_label()    # step（continue 落此）
-        lb = self.new_label()    # break / 退出
         lines.append("label " + lc)
-        if cond is None:
-            lines.append(self.emit_call(self.ret_setter, ["1"]))
+        lines.extend(condl)
+        lines.append("jump -a " + lb)
+        lines.append("jump " + le)
+        lines.append("label " + lb)
+        self._loop.append({"break": le, "continue": lc})
+        lines.extend(self.code(body, vs, exp_stack))
+        self._loop.pop()
+        lines.append("jump " + lc)
+        lines.append("label " + le)
+
+    # ---- do {body} while(cond) 转译：先跑一次再判（continue→条件, break→出口） ----
+    def emit_do(self, st, lines, vs, exp_stack):
+        _, cond, body = st
+        lbody = self.new_label()
+        lcond = self.new_label()   # 条件（continue 落此：重判）
+        lexit = self.new_label()   # 出口（break 落此）
+        lines.append("label " + lbody)
+        self._loop.append({"break": lexit, "continue": lcond})
+        lines.extend(self.code(body, vs, exp_stack))
+        self._loop.pop()
+        lines.append("label " + lcond)
+        if cond[0] == "bool":
+            if cond[1]:
+                lines.append(self.emit_call(self.ret_setter, ["1"]))
+            else:
+                lines.append(self.emit_call(self.ret_setter, ["0"]))
         else:
             condl = []
             self.emit_cond(cond, condl, vs, exp_stack)
             lines.extend(condl)
-        lines.append("jump -a " + lbb)
-        lines.append("jump " + lb)
-        lines.append("label " + lbb)
-        self._loop.append({"break": lb, "continue": ls})
-        lines.extend(self.code(body, vs, exp_stack))
-        self._loop.pop()
-        lines.append("label " + ls)
-        if step is not None:
-            lines.extend(self.code([step], vs, exp_stack))
-        lines.append("jump " + lc)
-        lines.append("label " + lb)
+        lines.append("jump -a " + lbody)
+        lines.append("label " + lexit)
+
+    # ---- when（Kotlin 风格；主语可选；命中分支执行后自动结束，无 fallthrough） ----
+    def emit_when(self, st, lines, vs, exp_stack):
+        _, subj, arms = st
+        wend = self.new_label()
+        entries = []               # (body, 入口 label)
+        pend = None                # else body
+        # 探测序列：guard → 条件序列；match → 主语 与各匹配值比较（均跳各自臂入口）
+        for kind, a, body in arms:
+            if kind == "else":
+                pend = body
+                continue
+            lbl = self.new_label()
+            if kind == "guard":
+                condl = []
+                self.emit_cond(a, condl, vs, exp_stack)
+                lines.extend(condl)
+                lines.append("jump -a " + lbl)
+            else:   # match：主语与每个匹配值比较，命中即跳该臂
+                for m in a:
+                    op, lt, rt = self._when_cmp(subj, m)
+                    lines.append("%s %s %s" % (op, lt, rt))
+                    lines.append("jump -a " + lbl)
+            entries.append((body, lbl))
+        # 兜底：有 else → 顺序执行 else body；无 else → 直接跳 when 尾
+        if pend is not None:
+            lines.extend(self.code(pend, vs, exp_stack))
+        lines.append("jump " + wend)
+        # 各命中臂体（执行后统一跳 when 尾，无 fallthrough）
+        for body, lbl in entries:
+            lines.append("label " + lbl)
+            lines.extend(self.code(body, vs, exp_stack))
+            lines.append("jump " + wend)
+        lines.append("label " + wend)
+
+    def _when_cmp(self, a, b):
+        """when 主语 vs 匹配值：返回 (op, 左文本, 右文本)。字符串/flag→seq 文本；数值→ieq"""
+        if self._when_is_str(a) or self._when_is_str(b):
+            if not (self._when_is_str(a) and self._when_is_str(b)):
+                raise S2CError("when 匹配：字符串/flag 与数值不能混用比较")
+            return ("seq", self._when_text(a), self._when_text(b))
+        return ("ieq", self._when_num(a), self._when_num(b))
+
+    def _when_is_str(self, n):
+        k = n[0]
+        if k in ("str", "varref"):
+            return True
+        if k == "var":
+            return self.vtypes.get(n[1]) in ("string", "flag")
+        if k == "lit":
+            v = n[1]
+            return not (v.lstrip("-").isdigit() or v[:2].lower() in ("0x", "0b"))
+        return False
+
+    def _when_text(self, n):
+        k = n[0]
+        if k in ("var", "varref"):
+            return "${" + n[1] + "}"
+        if k in ("str", "lit"):
+            return self.quote_lit(n[1])
+        raise S2CError("when 文本比较不支持该节点")
+
+    def _when_num(self, n):
+        k = n[0]
+        if k == "var":
+            return n[1]
+        if k == "lit":
+            return n[1]
+        if k == "bool":
+            return "1" if n[1] else "0"
+        raise S2CError("when 数值比较不支持该节点")
 
     # ---- 函数内联 ----
     def expand_fn(self, name, args, out, vs, exp_stack):
@@ -1235,18 +1358,38 @@ class Compiler:
             elif k == "while":
                 cond, body = st[1], st[2]
                 out.append(("while", self.clone_cond(cond, sub), self.clone_sub(body, sub)))
-            elif k == "for":
-                init, cond, step, body = st[1], st[2], st[3], st[4]
-                out.append(("for",
-                            self.clone_sub([init], sub)[0] if init is not None else None,
-                            self.clone_cond(cond, sub),
-                            self.clone_sub([step], sub)[0] if step is not None else None,
-                            self.clone_sub(body, sub)))
+            elif k == "do":
+                cond, body = st[1], st[2]
+                out.append(("do", self.clone_cond(cond, sub), self.clone_sub(body, sub)))
+            elif k == "when":
+                _, subj, arms = st
+                oa = []
+                for kind, a, body in arms:
+                    if kind == "else":
+                        oa.append(("else", None, self.clone_sub(body, sub)))
+                    elif kind == "guard":
+                        oa.append(("guard", self.clone_cond(a, sub),
+                                   self.clone_sub(body, sub)))
+                    else:
+                        oa.append(("match",
+                                   [Compiler.clone_when_node(m, sub) for m in a],
+                                   self.clone_sub(body, sub)))
+                out.append(("when", Compiler.clone_when_node(subj, sub), oa))
             elif k in ("break", "continue"):
                 out.append(st)
             else:
                 raise S2CError("fn 体内不支持该语句 %r" % (k,))
         return out
+
+    @classmethod
+    def clone_when_node(cls, node, sub):
+        """when 主语/匹配值克隆（fn 实参替换：形参变量 → 实参字面量）"""
+        if node is None:
+            return None
+        if node[0] == "var":
+            nm = node[1]
+            return ("lit", sub[nm]) if nm in sub else node
+        return node
 
     @classmethod
     def clone_cond(cls, cond, sub):
