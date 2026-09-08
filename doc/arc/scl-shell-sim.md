@@ -65,9 +65,23 @@ Windows 用 conio 取键；Linux 用 raw 终端。方向键统一归一化成 AN
 
 自动化验证（example/main.c 第 7 节）：用**注入字节流**模拟串口对话
 （执行/变量跨命令/三种 Tab 补全/历史 ↑ 重放/busy 忽略/quit），
-如同把一串串口抓包喂给 MCU。基线：scl_test PASS=78。
+如同把一串串口抓包喂给 MCU。基线：scl_test PASS=127。
+
+### Tab 补全与 CMDDESC 联动（`SCL_CFG_CMDDESC_EN=1` 时）
+
+- **多候选逐行带 desc**：Tab 出多个候选时每个候选一行；若候选是注册命令且带
+  `desc->help`，行尾附“ — 帮助文本”（如 `demo_reset — 计数清零并设目标`），
+  关键字/变量候选保持原名输出。
+- **参数位 usage 提示**：命令行已处于参数位置（首命令完整）且该命令带参数模板时，
+  按 Tab 只提示 `usage: <cmd> <name:type>…` 一行（不插入文本、不改行），
+  供回忆参数名/顺序；无模板命令静默。
+
+两者辅助函数（`Sh_EqN/Sh_FindCmd/Sh_TypeName/Sh_PrintUsage`）仅在 CMDDESC=1 时编译，
+关宏不影响 Shell 其它功能。
 
 ## 5. 相关
 
 - 预编译只读程序（更省 RAM 的固定脚本方案）：`doc/arc/scl-const-prog.md`
+- 命令描述/`help <cmd>` 明细：`doc/arc/scl-cmddesc.md`
+- MCU(STM32) 移植模板：`example/mcu_template/README.md`
 - 配置裁剪档：见 `scl_cfg.h` 与 doc/other/scl-config-profiles.md

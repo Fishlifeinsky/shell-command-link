@@ -6,13 +6,16 @@
 
 - **多类型变量**：`var <type> x=val`，type ∈ `bool`/`int`/`flag`/`string`
   （默认 4 槽 / 名 ≤8 / 值 16B，全部可裁剪）
-- **const 只读常量**：`var const <type> x=val`（现代源写 `const [type] x=val`）——
-  声明后不可覆盖/释放/作写回目标；`SCL_VarSetConst/IsConst`；列表带 `const` 标记
+- **const 只读常量**：`var const <type> x=val`（现代源顶层写 `const [type] x=val`
+  或 `var const [type] x=val`）——声明后不可覆盖/释放/作写回目标；
+  `SCL_VarSetConst/IsConst`；列表带 `const` 标记
 - **类型化参数字节缓存**：命令参数入缓存即解析成 type 块（bool/int/flag/string），
   type 开头、无空格分隔；命令可用 `SCL_ArgType()` 区分参数类型
 - 命令实参内 `${x}` 取值（支持拼接）；C 命令可用 `SCL_VarGet()/VarSet()/VarSetT()/VarType()`
 - **命令描述注册辅助**（参考 ESP-IDF console/argtable3）：声明命令 help + 参数模板，
   注册后自动参数数量/类型校验并输出 usage，`help` 汇总带说明；`SCL_ParseInt` 无 libc 取数
+- **`help [cmd]` 单命令明细**：`help` 全览；`help <cmd>`（含内置元命令/运算，大小写不敏感）
+  输出该命令 help+usage+逐参必选/可选说明（esp_console 风格）
 - 源码**多模块**：`scl.c`(核心) + `scl_var.c`(会话变量) + `scl_env.c`(env)，内部 `scl_priv.h` 共享
 - `free` 释放 / `var` 查剩余空位；**脚本跑完自动全释放**
 - 全局条件标志 `G_RETURN`：命令/比较指令写、`jump -a` 读（**读后自动清零**）
@@ -25,11 +28,14 @@
   字节码放 Flash，`SCL_RunProg()` 直接执行，**不占 RAM 字节码/参数缓存/label**；
   可 `SCL_CFG_RUN_TEXT_EN=0` 裁掉动态编译器（固定脚本最省 RAM 用法）
 - **交互 Shell**（example/scl_shell）：串口 REPL —— 行编辑/历史 ↑↓/Tab 补全
-  命令与 `${var}`；`SCL_VarKeep(1)` 会话变量跨命令保留
+  命令与 `${var}`；多候选逐行列出并带命令 desc 一行帮助；参数位 Tab 提示 usage
+  （与 CMDDESC 联动）；`SCL_VarKeep(1)` 会话变量跨命令保留
 - **环境变量缓冲（持久配置）**：默认配置表装载 → 脚本 `${}`/命令/运算只读可见；
   `Scl_Env_Set` 修改；`Scl_Env_Save/Load` 序列化固化到用户自有存储(EEPROM/Flash/文件)
   与恢复；坏存储自动回退默认（`SCL_CFG_ENV_MAX` 可裁剪）
 - **MCU 串口模拟**（example/sim_uart）：把 PC 终端当串口体验/调试
+- **MCU(STM32) 移植模板**（example/mcu_template）：真实工程样板 —— HAL UART 移植层
+  + main 集成骨架（env 固化 + const 自检程序 + Shell）+ PC 无板自检（mcu_boot_sim）
 - **脚本结束自动全释放**（默认）；置 `SCL_VarKeep(1)` 后保留为会话变量
 - **汇编式控制流**：`label 名` 设跳转点；`jump [-a] 名`（-a=G_RETURN 真跳）
 - **文本→字节码**：指令固定 4 字节（opc + 参数偏移），命令注册自动分配 opcode
@@ -65,6 +71,7 @@ tools/scl_emit_c.py           SCL 脚本 → const C 程序（Flash 只读，省
 tools/s2c_test.py             转译器测试（精确比对 + 真实回喂 + emit-c）
 example/                      PC 示例（main.c 全量测试 / chain_runner 回喂 /
                               scl_shell 交互 Shell / sim_uart 串口模拟 / s2c/*.s2c）
+example/mcu_template/         MCU(STM32) 移植模板（HAL port + main 骨架 + PC 自检）
 ```
 
 ## 快速集成

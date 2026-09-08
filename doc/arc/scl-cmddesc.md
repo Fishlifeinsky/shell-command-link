@@ -98,5 +98,22 @@ scl: 已注册命令:
 ## 3. 验证
 
 `scl_test` 第 9 节：help 带描述与 usage、缺参/错类型/过多参数被拒、合法执行、
-拒绝后状态干净、`SCL_ParseInt` 解析。基线：scl_test PASS=105 / s2c_test PASS=64；
-`SCL_CFG_CMDDESC_EN=0` 变体 PASS=97（裁剪正确）。
+拒绝后状态干净、`SCL_ParseInt` 解析。基线：scl_test PASS=127 / s2c_test PASS=75；
+`SCL_CFG_CMDDESC_EN=0` 变体 PASS=108（裁剪正确）。
+
+## 4. `help <cmd>` 单命令明细 + Shell 联动（esp_console 风格）
+
+`help` 原本只做全览；参数（`help <cmd>`）此前被编译缓存但执行端未用。本次接入：
+
+- **执行端**：`help` 的 raw 参数传入 `Scl_DoHelpRaw()` —— 无参=全览（输出不变）；
+  带命令名=单命令明细，查找顺序：注册命令 → 内置元命令 → 内置运算（分组），
+  大小写不敏感，未知命令提示“用 help 查看全部”。
+- **注册命令明细**：有 `desc` 输出 `名字（异步）— 帮助` + `usage:` + 逐参
+  `name<type> [必选/可选]  帮助`；无 `desc` 回落普通说明（不依赖 CMDDESC 也能用）。
+- **内置文档表**：`var/free/help/label/jump` 元命令与 `iadd/…/seq` 等运算分组
+  各给一行到数行中文说明（ROM 只读，条件不变）。
+- **Shell 联动**（example/scl_shell.c，CMDDESC=1 时）：
+  - Tab 多候选时**逐行**列出候选，注册命令带 desc 则每行附一行帮助；
+  - 参数位（首命令完整且带参数模板）按 Tab 输出该命令 `usage:` 行（不插文本）。
+
+测试：第 9 节新增 `help <cmd>` 8 例；Shell 第 7 节新增 desc 联动 3 例（desc 宏内）。
