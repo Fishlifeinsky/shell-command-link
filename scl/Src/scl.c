@@ -1393,7 +1393,8 @@ static uint8_t Scl_TypeOfName(const char *s, uint16_t n)
 }
 
 #if (SCL_CFG_CMDDESC_EN != 0u)
-static void Scl_DescPrintUsage(const scl_cmd_t *nd);   /* 前向：供 help 输出模板概要 */
+static void Scl_DescPrintUsage(const scl_cmd_t *nd);     /* 前向：供 help 输出模板概要 */
+static void Scl_DescPrintDetail(const scl_cmd_t *nd);    /* 前向：help <cmd> 命令明细 */
 #endif
 
 static void Scl_DoHelp(void)
@@ -1425,6 +1426,145 @@ static void Scl_DoHelp(void)
         }
 #endif
     }
+}
+
+/* ========================== help <cmd>：单命令明细 ========================== */
+
+/* 帮助表条目：name 匹配时输出 doc（doc 行尾已含 \r\n） */
+typedef struct
+{
+    const char *name;
+    const char *doc;
+} scl_help_doc_t;
+
+/* 内置元命令帮助（var/free/help/label/jump） */
+static const scl_help_doc_t s_help_meta[] =
+{
+    { "var",
+      "变量/常量管理\r\n"
+      "  var free                      释放全部变量（剩余空位见输出）\r\n"
+      "  var <type> <name>=<value>     声明变量, type = bool/int/flag/string\r\n"
+      "  var const <type> <name>=<v>   声明只读常量（不可覆盖/释放）\r\n"
+      "  var <name>                    查询单个变量\r\n"
+      "  ${<name>}                     在其它指令参数中引用变量值" },
+    { "free",
+      "释放变量\r\n"
+      "  free              释放全部变量\r\n"
+      "  free <name>       释放单个变量（const 常量拒绝）" },
+    { "help",
+      "帮助\r\n"
+      "  help              列出全部命令\r\n"
+      "  help <cmd>        查看单条命令用法（业务命令带参数模板明细）" },
+    { "label",
+      "设置跳转点（脚本编译期登记, 供 jump 跳转）\r\n"
+      "  label <name>" },
+    { "jump",
+      "跳转（汇编式控制流）\r\n"
+      "  jump <name>         无条件跳转\r\n"
+      "  jump -a <name>      G_RETURN 为真时跳转（读后清零）" }
+};
+
+/* 内置运算指令帮助（分组, 组内各 token 均命中同组说明） */
+static const scl_help_doc_t s_help_ops[] =
+{
+    { "iadd isub imul idiv imod ineg", "int 算术：op a b → dst（结果写回 dst 变量）" },
+    { "ieq ine igt ige ilt ile",       "int 比较：op a b → G_RETURN" },
+    { "band bor bnot",                 "bool 逻辑：op a [b] → G_RETURN" },
+    { "btest",                         "取变量真值 → G_RETURN（bool/非0 int/已定义 flag）" },
+    { "iand ior ixor inot shl shr",    "int 位运算/移位：op a b → dst（结果写回变量）" },
+    { "seq sneq",                      "string/flag 相等/不等比较 → G_RETURN（变量自动展开）" }
+};
+
+/* 判断 name 是否命中表条目（条目名内以空格分隔的任一 token） */
+static const char *Scl_HelpDocFind(const scl_help_doc_t *tbl, uint16_t n,
+                                   const char *name, uint16_t len)
+{
+    uint16_t i;
+    for (i = 0u; i < n; i++)
+    {
+        const char *p = tbl[i].name;
+        while (*p != '\0')
+        {
+            const char *tb = p;
+            while ((*p != '\0') && !Scl_IsSp(*p)) { p++; }
+            if (((uint16_t)(p - tb) == len) && Scl_EqIN(tb, name, len))
+            {
+                return tbl[i].doc;
+            }
+            while (Scl_IsSp(*p)) { p++; }
+        }
+    }
+    return NULL;
+}
+
+/* help <cmd>：单命令帮助（注册命令优先, 其次内置元命令/运算） */
+static void Scl_HelpOne(const char *nm, uint16_t nl)
+{
+    const scl_cmd_t *node;
+    const char *doc;
+
+    /* 1) 注册命令（大小写不敏感查找, 便于交互输入） */
+    for (node = s_cmd_head; node != NULL; node = node->next)
+    {
+        uint16_t L = Scl_StrLen(node->name);
+        if ((L == nl) && Scl_EqIN(node->name, nm, nl))
+        {
+#if (SCL_CFG_CMDDESC_EN != 0u)
+            if (node->desc != NULL)
+            {
+                Scl_DescPrintDetail(node);
+            }
+            else
+#endif
+            {
+                Scl_Msg("%s%s\r\n", node->name,
+                        (node->sync != NULL) ? "（异步）" : "");
+                Scl_Msg("  普通注册命令（无参数模板描述）\r\n");
+            }
+            return;
+        }
+    }
+    /* 2) 内置元命令 / 内置运算 */
+    doc = Scl_HelpDocFind(s_help_meta,
+                          (uint16_t)(sizeof(s_help_meta) / sizeof(s_help_meta[0])),
+                          nm, nl);
+    if (doc == NULL)
+    {
+        doc = Scl_HelpDocFind(s_help_ops,
+                              (uint16_t)(sizeof(s_help_ops) / sizeof(s_help_ops[0])),
+                              nm, nl);
+    }
+    if (doc != NULL)
+    {
+        Scl_Msg("%s\r\n", doc);
+        return;
+    }
+    {
+        char nbuf[32u];
+        uint16_t nn = (nl < 31u) ? nl : 31u;
+        uint16_t k;
+        for (k = 0u; k < nn; k++) { nbuf[k] = nm[k]; }
+        nbuf[nn] = '\0';
+        Scl_MsgErr("help: 未知命令 '%s'（help 查看全部）", nbuf);
+    }
+}
+
+/* help [cmd]：无参 → 全部概览；有参 → 单命令明细 */
+static void Scl_DoHelpRaw(const char *raw)
+{
+    const char *p;
+    const char *nb;
+
+    if ((raw == NULL) || (raw[0] == '\0'))
+    {
+        Scl_DoHelp();
+        return;
+    }
+    p = raw;
+    while (Scl_IsSp(*p)) { p++; }
+    nb = p;
+    while ((*p != '\0') && !Scl_IsSp(*p)) { p++; }
+    Scl_HelpOne(nb, (uint16_t)(p - nb));
 }
 
 /* 数字解析（命令内取值用，无 libc）：文本 → int32；失败返回 def */
@@ -1460,6 +1600,31 @@ static void Scl_DescPrintUsage(const scl_cmd_t *nd)
         }
     }
     Scl_Msg("\r\n");
+}
+
+/* 打印单命令完整明细（help <cmd>；esp_console 风格：help+usage+逐参数说明） */
+static void Scl_DescPrintDetail(const scl_cmd_t *nd)
+{
+    const scl_cmd_desc_t *d = nd->desc;
+    int i;
+    Scl_Msg("%s%s", nd->name, (nd->sync != NULL) ? "（异步）" : "");
+    if ((d != NULL) && (d->help != NULL))
+    {
+        Scl_Msg(" — %s", d->help);
+    }
+    Scl_Msg("\r\n");
+    Scl_DescPrintUsage(nd);
+    if ((d != NULL) && (d->args != NULL) && (d->arg_cnt > 0))
+    {
+        for (i = 0; i < d->arg_cnt; i++)
+        {
+            const scl_arg_spec_t *a = &d->args[i];
+            Scl_Msg("    %s<%s>%s", a->name, Scl_TypeName(a->type),
+                    (a->opt != 0u) ? " [可选]" : " [必选]");
+            if (a->help != NULL) { Scl_Msg("  %s", a->help); }
+            Scl_Msg("\r\n");
+        }
+    }
 }
 
 /* 单参数与模板匹配：0=通过。string 模板接受任意；int 模板接受 int 或可解析的文本；
@@ -1992,7 +2157,7 @@ static void Scl_StepOnce(void)
         return;
 
     case SCL_OP_HELP:
-        Scl_DoHelp();
+        Scl_DoHelpRaw(Scl_ArgLoad(aoff));   /* help [cmd]：空=全览; 带名=单命令明细 */
         s_pc = next;
         return;
 

@@ -731,6 +731,70 @@ static void TestCmdDesc(void)
     CHECK(SCL_ParseInt("0x10", -1) == 16 && SCL_ParseInt("-3", 0) == -3 &&
           SCL_ParseInt("abc", 7) == 7,
           "SCL_ParseInt：hex/负/失败默认值");
+
+    /* ---- help <cmd>：单命令明细（esp_console 风格） ---- */
+    {
+        Scl_CapBegin(buf, sizeof(buf));
+        RunToIdle("help echo");           /* 无模板命令：help + usage 行 */
+        Scl_CapEnd();
+        CHECK(strstr(buf, "echo — 打印参数") != NULL &&
+              strstr(buf, "usage: echo") != NULL,
+              "help <cmd>：无模板命令显示帮助与 usage");
+    }
+    {
+        Scl_CapBegin(buf, sizeof(buf));
+        RunToIdle("help setret");         /* 有模板：usage + 逐参明细 */
+        Scl_CapEnd();
+        CHECK(strstr(buf, "usage: setret <value:int>") != NULL &&
+              strstr(buf, "value<int> [必选]") != NULL &&
+              strstr(buf, "写 G_RETURN") != NULL,
+              "help <cmd>：显示参数模板明细(必选/帮助)");
+    }
+    {
+        Scl_CapBegin(buf, sizeof(buf));
+        RunToIdle("help wait");           /* 异步命令标注 */
+        Scl_CapEnd();
+        CHECK(strstr(buf, "wait（异步）") != NULL &&
+              strstr(buf, "n<int> [必选]") != NULL,
+              "help <cmd>：异步命令标注与参数");
+    }
+    {
+        Scl_CapBegin(buf, sizeof(buf));
+        RunToIdle("help demo_reset");     /* 可选参数标注 */
+        Scl_CapEnd();
+        CHECK(strstr(buf, "n<int> [可选]") != NULL &&
+              strstr(buf, "目标计数（默认 3）") != NULL,
+              "help <cmd>：可选参数标注与帮助文本");
+    }
+    {
+        Scl_CapBegin(buf, sizeof(buf));
+        RunToIdle("help var");            /* 内置元命令文档 */
+        Scl_CapEnd();
+        CHECK(strstr(buf, "变量/常量管理") != NULL &&
+              strstr(buf, "声明只读常量") != NULL,
+              "help <内置元命令>：var 文档");
+    }
+    {
+        Scl_CapBegin(buf, sizeof(buf));
+        RunToIdle("help iadd");           /* 内置运算文档 */
+        Scl_CapEnd();
+        CHECK(strstr(buf, "int 算术") != NULL,
+              "help <内置运算>：iadd 文档");
+    }
+    {
+        Scl_CapBegin(buf, sizeof(buf));
+        RunToIdle("help JUMP");           /* 大小写不敏感 */
+        Scl_CapEnd();
+        CHECK(strstr(buf, "无条件跳转") != NULL,
+              "help <cmd>：大小写不敏感匹配");
+    }
+    {
+        Scl_CapBegin(buf, sizeof(buf));
+        RunToIdle("help nosuch");         /* 未知命令提示 */
+        Scl_CapEnd();
+        CHECK(strstr(buf, "未知命令") != NULL,
+              "help <cmd>：未知命令提示");
+    }
 }
 
 #endif /* SCL_CFG_CMDDESC_EN */
