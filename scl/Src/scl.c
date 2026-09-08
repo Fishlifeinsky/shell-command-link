@@ -105,14 +105,6 @@ enum
     SCL_OP_CMD_BASE = 0x0100u  /* 注册命令 opcode 起点（自动递增） */
 };
 
-/* 编译中间伪指令 */
-enum
-{
-    SCL_P_LABEL  = 0xFF00u,   /* label */
-    SCL_P_JUMP   = 0xFF01u,   /* jump 无条件 */
-    SCL_P_JUMPA  = 0xFF02u    /* jump -a */
-};
-
 /* ========================== 静态状态 ========================== */
 
 static uint8_t s_inited = 0u;      /* 首次自动初始化标记 */
@@ -1052,242 +1044,132 @@ static uint16_t Scl_OpWord(const char *s, uint16_t n)
     return 0u;
 }
 
-/* 编译中间指令记录（先收集再回填，静态数组） */
+/* 编译（两遍直接扫描文本，不保留中间指令表 —— 省 RAM：原 s_ins[BC/4] 静态表 ~KB 级）。
+   第一遍登记 label 表并统计指令数；第二遍从文本重扫逐条生成字节码/参数缓存；
+   两遍共用 Scl_NextClause 保证子句切分完全一致。 */
 #define SCL_BC_INSTR_MAX (SCL_CFG_BC_MAX / 4u)
 
+/* 一条待编译子句的规范化视图 */
 typedef struct
 {
-    uint16_t opc;           /* 真 opcode 或 SCL_P_* 伪指令 */
-    uint16_t cond;          /* jump: 0=无条件 -b, 1=-a */
-    const char *raw;        /* 参数原文指针（指向待编译文本内，编译期有效） */
-    uint16_t rawlen;
-} scl_ins_t;
+    const char *hs;      /* 首词（命令/关键字）起点 */
+    uint16_t    hlen;    /* 首词长度 */
+    const char *rs;      /* 参数区起点（去前导空白） */
+    const char *re;      /* 参数区终点（已去尾空白，不含） */
+} scl_clause_t;
 
-static scl_ins_t s_ins[SCL_BC_INSTR_MAX];
-
-/* 编译文本为字节码（s_bc/s_argc/s_labels）。成功返回 1 */
-static uint8_t Scl_Compile(const char *script)
+/* 从 *pp 取下一条"有效子句"（自动跳过空子句与 # 注释）。
+   返回 0=得到子句并填充 cl；1=文本结束。成功时 *pp 已越过该子句（含其后的 ';'） */
+static uint8_t Scl_NextClause(const char **pp, scl_clause_t *cl)
 {
-    const char *p = script;
-    uint16_t icnt = 0u;      /* 指令数（label 不计） */
-    uint16_t i;
-    uint8_t  ok = 1u;
-
-    s_label_cnt = 0u;
-    s_arg_len   = 0u;
-
-    /* ---- 第一遍：扫描子句，收集指令与 label ---- */
-    while (ok && (*p != '\0'))
+    const char *p = *pp;
+    for (;;)
     {
         const char *cs;
         const char *ce;
+        const char *hs;
+        const char *he;
+        const char *rs;
+        const char *re;
         char q = 0;
 
-        /* 跳过分隔 ';' 与空白 */
-        while ((*p == ';') || Scl_IsSp(*p))
-        {
-            p++;
-        }
-        if (*p == '\0')
-        {
-            break;
-        }
+        while ((*p == ';') || Scl_IsSp(*p)) { p++; }
+        if (*p == '\0') { return 1u; }
         cs = p;
-        /* 扫描到顶层 ';'（引号内 ';' 不分割） */
         while (*p != '\0')
         {
-            if ((*p == ';') && (q == 0))
-            {
-                break;
-            }
+            if ((*p == ';') && (q == 0)) { break; }
             if ((*p == '"') || (*p == '\''))
             {
-                if (q == 0)
-                {
-                    q = *p;
-                }
-                else if (q == *p)
-                {
-                    q = 0;
-                }
+                if (q == 0) { q = *p; }
+                else if (q == *p) { q = 0; }
             }
             p++;
         }
         ce = p;
-        if (*p == ';')
-        {
-            p++;
-        }
-
-        /* 提取子句首 token（命令名/关键字） */
-        {
-            const char *hs = cs;
-            const char *he = cs;
-            while ((he < ce) && !Scl_IsSp(*he))
-            {
-                he++;
-            }
-            /* v0.3：整句注释 —— 以 '#' 开头的子句在编译期跳过（值内 '#' 不受影响） */
-            if ((hs < he) && (*hs == '#'))
-            {
-                continue;
-            }
-            /* 参数原文 = head 之后，去两端空白 */
-            {
-                const char *rs = he;
-                const char *re = ce;
-                while ((rs < re) && Scl_IsSp(*rs)) { rs++; }
-                while ((re > rs) && Scl_IsSp(*(re - 1))) { re--; }
-
-                if (icnt >= SCL_BC_INSTR_MAX)
-                {
-                    Scl_MsgErr("指令过多(>%d)", (int)SCL_BC_INSTR_MAX);
-                    ok = 0;
-                    break;
-                }
-                if (Scl_EqN(hs, "label", 5u) && ((uint16_t)(he - hs) == 5u))
-                {
-                    /* label <名>：登记名 → 当前指令计数*4 */
-                    const char *nb = rs;
-                    uint16_t nlen = (uint16_t)(re - rs);
-                    uint8_t dup = 0u;
-                    if ((nlen == 0u) || (nlen > SCL_CFG_LABEL_NAME_MAX))
-                    {
-                        Scl_MsgErr("label: 名不合法");
-                        ok = 0;
-                        break;
-                    }
-                    if (s_label_cnt >= (uint8_t)SCL_CFG_LABEL_MAX)
-                    {
-                        Scl_MsgErr("label 过多(>%d)", (int)SCL_CFG_LABEL_MAX);
-                        ok = 0;
-                        break;
-                    }
-                    for (i = 0u; i < s_label_cnt; i++)
-                    {
-                        if ((Scl_StrLen(s_labels[i].name) == nlen) &&
-                            Scl_EqN(s_labels[i].name, nb, nlen))
-                        {
-                            dup = 1u;
-                            break;
-                        }
-                    }
-                    if (dup != 0u)
-                    {
-                        Scl_MsgErr("label 重名");
-                        ok = 0;
-                        break;
-                    }
-                    s_labels[s_label_cnt].off = (uint16_t)(icnt * 4u);
-                    {
-                        uint16_t j;
-                        for (j = 0u; j < nlen; j++)
-                        {
-                            s_labels[s_label_cnt].name[j] = nb[j];
-                        }
-                        s_labels[s_label_cnt].name[nlen] = '\0';
-                    }
-                    s_label_cnt++;
-                    continue;   /* label 不占指令 */
-                }
-                else if (Scl_EqN(hs, "jump", 4u) && ((uint16_t)(he - hs) == 4u))
-                {
-                    /* jump [-a|-b] <名> */
-                    const char *w = rs;
-                    const char *wn;
-                    uint8_t cond = 0u;
-                    const char *tgt = rs;
-                    uint16_t tlen;
-
-                    while ((w < re) && !Scl_IsSp(*w)) { w++; }   /* 第一个 token 末尾 */
-                    wn = w;
-                    while ((wn < re) && Scl_IsSp(*wn)) { wn++; } /* 第二个 token 起点 */
-                    if (((uint16_t)(w - rs) == 2u) && (rs[0] == '-'))
-                    {
-                        if (rs[1] == 'a')
-                        {
-                            cond = 1u;
-                        }
-                        else if (rs[1] == 'b')
-                        {
-                            cond = 0u;
-                        }
-                        else
-                        {
-                            Scl_MsgErr("jump: 未知模式");
-                            ok = 0;
-                            break;
-                        }
-                        tgt  = wn;
-                        tlen = (uint16_t)(re - wn);   /* re 已去尾空白 */
-                    }
-                    else
-                    {
-                        tgt  = rs;
-                        tlen = (uint16_t)(w - rs);    /* 无模式：整体为 label 名 */
-                    }
-                    if (tlen == 0u)
-                    {
-                        Scl_MsgErr("jump: 缺少目标 label");
-                        ok = 0;
-                        break;
-                    }
-                    s_ins[icnt].opc    = (cond != 0u) ? SCL_P_JUMPA : SCL_P_JUMP;
-                    s_ins[icnt].cond   = cond;
-                    s_ins[icnt].raw    = tgt;
-                    s_ins[icnt].rawlen = tlen;
-                    icnt++;
-                }
-                else
-                {
-                    /* 内置运算指令 / 内置元命令 / 注册命令 */
-                    uint16_t opc = 0u;
-                    opc = Scl_OpWord(hs, (uint16_t)(he - hs));   /* 运算指令优先（保留字） */
-                    if (opc == 0u)
-                    {
-                        if (Scl_EqN(hs, "help", 4u) && ((uint16_t)(he - hs) == 4u))
-                        {
-                            opc = SCL_OP_HELP;
-                        }
-                        else if (Scl_EqN(hs, "var", 3u) && ((uint16_t)(he - hs) == 3u))
-                        {
-                            opc = SCL_OP_VAR;
-                        }
-                        else if (Scl_EqN(hs, "free", 4u) && ((uint16_t)(he - hs) == 4u))
-                        {
-                            opc = SCL_OP_FREE;
-                        }
-                        else
-                        {
-                            scl_cmd_t *nd = Scl_CmdFindName(hs, (uint16_t)(he - hs));
-                            if (nd == NULL)
-                            {
-                                char nbuf[24u];
-                                uint16_t nn = ((uint16_t)(he - hs) < 23u) ? (uint16_t)(he - hs) : 23u;
-                                uint16_t k;
-                                for (k = 0u; k < nn; k++) { nbuf[k] = hs[k]; }
-                                nbuf[nn] = '\0';
-                                Scl_MsgErr("未知命令 '%s'", nbuf);
-                                ok = 0;
-                                break;
-                            }
-                            opc = nd->opc;
-                        }
-                    }
-                    s_ins[icnt].opc    = opc;
-                    s_ins[icnt].cond   = 0u;
-                    s_ins[icnt].raw    = rs;
-                    s_ins[icnt].rawlen = (uint16_t)(re - rs);
-                    icnt++;
-                }
-            }
-        }
-    }
-
-    if (!ok)
-    {
+        if (*p == ';') { p++; }
+        hs = cs;
+        he = cs;
+        while ((he < ce) && !Scl_IsSp(*he)) { he++; }
+        /* 整句注释：以 '#' 开头的子句跳过（值内 '#' 不受影响） */
+        if ((hs < he) && (*hs == '#')) { continue; }
+        rs = he;
+        re = ce;
+        while ((rs < re) && Scl_IsSp(*rs)) { rs++; }
+        while ((re > rs) && Scl_IsSp(*(re - 1))) { re--; }
+        cl->hs   = hs;
+        cl->hlen = (uint16_t)(he - hs);
+        cl->rs   = rs;
+        cl->re   = re;
+        *pp = p;
         return 0u;
     }
+}
+
+/* 编译文本为字节码（s_bc/s_argc/s_labels）。成功返回 1 */
+static uint8_t Scl_Compile(const char *script)
+{
+    const char *p;
+    uint16_t icnt = 0u;      /* 指令数（label 不计） */
+    uint16_t i;
+    scl_clause_t cl;
+
+    s_label_cnt = 0u;
+    s_arg_len   = 0u;
+
+    /* ---- 第一遍：登记 label 表并统计指令数（不产中间表，省 RAM） ---- */
+    p = script;
+    while (Scl_NextClause(&p, &cl) == 0u)
+    {
+        if (icnt >= SCL_BC_INSTR_MAX)
+        {
+            Scl_MsgErr("指令过多(>%d)", (int)SCL_BC_INSTR_MAX);
+            return 0u;
+        }
+        if ((cl.hlen == 5u) && Scl_EqN(cl.hs, "label", 5u))
+        {
+            /* label <名>：登记名 → 当前指令计数*4 */
+            uint16_t nlen = (uint16_t)(cl.re - cl.rs);
+            uint8_t dup = 0u;
+            if ((nlen == 0u) || (nlen > SCL_CFG_LABEL_NAME_MAX))
+            {
+                Scl_MsgErr("label: 名不合法");
+                return 0u;
+            }
+            if (s_label_cnt >= (uint8_t)SCL_CFG_LABEL_MAX)
+            {
+                Scl_MsgErr("label 过多(>%d)", (int)SCL_CFG_LABEL_MAX);
+                return 0u;
+            }
+            for (i = 0u; i < s_label_cnt; i++)
+            {
+                if ((Scl_StrLen(s_labels[i].name) == nlen) &&
+                    Scl_EqN(s_labels[i].name, cl.rs, nlen))
+                {
+                    dup = 1u;
+                    break;
+                }
+            }
+            if (dup != 0u)
+            {
+                Scl_MsgErr("label 重名");
+                return 0u;
+            }
+            s_labels[s_label_cnt].off = (uint16_t)(icnt * 4u);
+            {
+                uint16_t j;
+                for (j = 0u; j < nlen; j++)
+                {
+                    s_labels[s_label_cnt].name[j] = cl.rs[j];
+                }
+                s_labels[s_label_cnt].name[nlen] = '\0';
+            }
+            s_label_cnt++;
+            continue;   /* label 不占指令 */
+        }
+        icnt++;   /* label 之外均占一条指令（jump/运算/元命令/业务命令） */
+    }
+
     if (icnt == 0u)
     {
         return 0u;   /* 无指令 */
@@ -1298,22 +1180,65 @@ static uint8_t Scl_Compile(const char *script)
         return 0u;
     }
 
-    /* ---- 第二遍：生成字节码与参数缓存，解析 jump 目标 ---- */
-    s_bc_len = 0u;
-    for (i = 0u; i < icnt; i++)
+    /* ---- 第二遍：重扫文本，逐条生成字节码与参数缓存（label 无字节码，跳过） ---- */
+    s_bc_len   = 0u;
+    s_arg_len  = 0u;
+    p = script;
+    while (Scl_NextClause(&p, &cl) == 0u)
     {
-        uint16_t opc = s_ins[i].opc;
+        uint16_t opc;
         uint16_t aoff = 0u;
 
-        if ((opc == SCL_P_JUMP) || (opc == SCL_P_JUMPA))
+        if ((cl.hlen == 5u) && Scl_EqN(cl.hs, "label", 5u))
         {
-            /* 解析目标 label */
+            continue;   /* label 不产生字节码 */
+        }
+        if ((cl.hlen == 4u) && Scl_EqN(cl.hs, "jump", 4u))
+        {
+            /* jump [-a|-b] <名>：解析模式与目标并回填绝对偏移 */
+            const char *w = cl.rs;
+            const char *wn;
+            uint8_t cond = 0u;
+            const char *tgt;
+            uint16_t tlen;
             uint8_t found = 0u;
             uint8_t k;
+
+            while ((w < cl.re) && !Scl_IsSp(*w)) { w++; }   /* 首 token 末尾 */
+            wn = w;
+            while ((wn < cl.re) && Scl_IsSp(*wn)) { wn++; } /* 次 token 起点 */
+            if (((uint16_t)(w - cl.rs) == 2u) && (cl.rs[0] == '-'))
+            {
+                if (cl.rs[1] == 'a')
+                {
+                    cond = 1u;
+                }
+                else if (cl.rs[1] == 'b')
+                {
+                    cond = 0u;
+                }
+                else
+                {
+                    Scl_MsgErr("jump: 未知模式");
+                    return 0u;
+                }
+                tgt  = wn;
+                tlen = (uint16_t)(cl.re - wn);   /* re 已去尾空白 */
+            }
+            else
+            {
+                tgt  = cl.rs;
+                tlen = (uint16_t)(w - cl.rs);    /* 无模式：整体为 label 名 */
+            }
+            if (tlen == 0u)
+            {
+                Scl_MsgErr("jump: 缺少目标 label");
+                return 0u;
+            }
             for (k = 0u; k < s_label_cnt; k++)
             {
-                if ((Scl_StrLen(s_labels[k].name) == s_ins[i].rawlen) &&
-                    Scl_EqN(s_labels[k].name, s_ins[i].raw, s_ins[i].rawlen))
+                if ((Scl_StrLen(s_labels[k].name) == tlen) &&
+                    Scl_EqN(s_labels[k].name, tgt, tlen))
                 {
                     aoff = s_labels[k].off;
                     found = 1u;
@@ -1323,34 +1248,68 @@ static uint8_t Scl_Compile(const char *script)
             if (found == 0u)
             {
                 char nbuf[SCL_CFG_LABEL_NAME_MAX + 1u];
-                uint16_t nn = (s_ins[i].rawlen < SCL_CFG_LABEL_NAME_MAX) ?
-                              s_ins[i].rawlen : SCL_CFG_LABEL_NAME_MAX;
-                uint16_t k;
-                for (k = 0u; k < nn; k++) { nbuf[k] = s_ins[i].raw[k]; }
+                uint16_t nn = (tlen < SCL_CFG_LABEL_NAME_MAX) ?
+                              tlen : SCL_CFG_LABEL_NAME_MAX;
+                for (k = 0u; k < nn; k++) { nbuf[k] = tgt[k]; }
                 nbuf[nn] = '\0';
                 Scl_MsgErr("jump: label '%s' 未定义", nbuf);
                 return 0u;
             }
-            opc = (s_ins[i].opc == SCL_P_JUMP) ? SCL_OP_JUMP : SCL_OP_JUMPA;
-        }
-        else if ((opc == SCL_OP_HELP) || (opc == SCL_OP_VAR) || (opc == SCL_OP_FREE))
-        {
-            /* 元指令：整段原文按单个 STR 块存（var/free/help 内部自行解析） */
-            aoff = Scl_ArgStoreMeta(s_ins[i].raw, s_ins[i].rawlen);
-            if (aoff == 0xFFFFu)
-            {
-                Scl_MsgErr("参数字节缓存不足/超长");
-                return 0u;
-            }
+            opc = (cond != 0u) ? SCL_OP_JUMPA : SCL_OP_JUMP;
         }
         else
         {
-            /* 业务命令/运算指令：字面量类型化存储 */
-            aoff = Scl_ArgStoreTyped(s_ins[i].raw, s_ins[i].raw + s_ins[i].rawlen);
-            if (aoff == 0xFFFFu)
+            /* 内置运算指令 / 内置元命令 / 注册命令 */
+            opc = Scl_OpWord(cl.hs, cl.hlen);   /* 运算指令优先（保留字） */
+            if (opc == 0u)
             {
-                Scl_MsgErr("参数字节缓存不足/参数超长/引号未闭合");
-                return 0u;
+                if ((cl.hlen == 4u) && Scl_EqN(cl.hs, "help", 4u))
+                {
+                    opc = SCL_OP_HELP;
+                }
+                else if ((cl.hlen == 3u) && Scl_EqN(cl.hs, "var", 3u))
+                {
+                    opc = SCL_OP_VAR;
+                }
+                else if ((cl.hlen == 4u) && Scl_EqN(cl.hs, "free", 4u))
+                {
+                    opc = SCL_OP_FREE;
+                }
+                else
+                {
+                    scl_cmd_t *nd = Scl_CmdFindName(cl.hs, cl.hlen);
+                    if (nd == NULL)
+                    {
+                        char nbuf[24u];
+                        uint16_t nn = (cl.hlen < 23u) ? cl.hlen : 23u;
+                        uint16_t k;
+                        for (k = 0u; k < nn; k++) { nbuf[k] = cl.hs[k]; }
+                        nbuf[nn] = '\0';
+                        Scl_MsgErr("未知命令 '%s'", nbuf);
+                        return 0u;
+                    }
+                    opc = nd->opc;
+                }
+            }
+            if ((opc == SCL_OP_HELP) || (opc == SCL_OP_VAR) || (opc == SCL_OP_FREE))
+            {
+                /* 元指令：整段原文按单个 STR 块存（var/free/help 内部自行解析） */
+                aoff = Scl_ArgStoreMeta(cl.rs, (uint16_t)(cl.re - cl.rs));
+                if (aoff == 0xFFFFu)
+                {
+                    Scl_MsgErr("参数字节缓存不足/超长");
+                    return 0u;
+                }
+            }
+            else
+            {
+                /* 业务命令/运算指令：字面量类型化存储 */
+                aoff = Scl_ArgStoreTyped(cl.rs, cl.re);
+                if (aoff == 0xFFFFu)
+                {
+                    Scl_MsgErr("参数字节缓存不足/参数超长/引号未闭合");
+                    return 0u;
+                }
             }
         }
         /* 写 4 字节：opc(大端) + aoff(大端) */
