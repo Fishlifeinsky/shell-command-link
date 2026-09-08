@@ -157,7 +157,7 @@ static volatile uint8_t s_abort = 0u;
 static scl_cmd_t *s_wait_cmd = NULL;         /* 正在异步等待的命令 */
 
 /* ---- 参数工作缓冲 ---- */
-#define SCL_RAW_MAX 256u                     /* 单条指令参数原文上限（含 '\0'） */
+#define SCL_RAW_MAX 64u                      /* 元指令参数原文上限（含 '\0'；var 整段 <40B、help/free 更短） */
 static char  s_raw[SCL_RAW_MAX];             /* 从缓存取出的参数原文（STR 块） */
 static char  s_argb[SCL_CFG_ARG_MAX][SCL_CFG_ARG_LEN_MAX];
 static char *s_argv[SCL_CFG_ARG_MAX];
