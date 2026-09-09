@@ -221,19 +221,22 @@ typedef struct scl_arg_spec
 } scl_arg_spec_t;
 
 /**
-  * @brief  命令描述（声明式：名字 + 一行帮助 + 参数模板）
-  * @note   args=NULL     → 不限制参数（如 echo 变参）；
+  * @brief  命令描述（声明式：名字 + 一行帮助 + 参数模板 + 可选多行详细说明）
+  * @note   args=NULL     → 不限制参数、不校验（如 echo 变参 / drv flag 型命令）；
   *         args!=NULL 且 arg_cnt>0 → 按模板校验（缺必选/多给/类型不符即拒绝并打印 usage）；
-  *         args!=NULL 且 arg_cnt==0 → 要求无参数
+  *         args!=NULL 且 arg_cnt==0 → 要求无参数；
+  *         doc：多行详细说明（可含 \r\n），仅 help <cmd> 明细输出，help 全览与
+  *         参数校验都不受影响（给 flag 型命令写手册、又不想启用校验时用）
   */
 typedef struct scl_cmd_desc
 {
     const char           *name;    /* 命令名 */
     const char           *help;    /* 一行帮助（help 命令显示，可 NULL） */
-    const scl_arg_spec_t *args;    /* 参数模板数组（NULL=不限） */
+    const scl_arg_spec_t *args;    /* 参数模板数组（NULL=不限，不校验） */
     int                   arg_cnt; /* 模板条数 */
     scl_cmd_handler_t     fn;      /* 命令实现（校验通过后调用，参数在 argv） */
     scl_sync_t            sync;    /* 异步同步回调（NULL=同步） */
+    const char           *doc;     /* v0.4a：多行详细说明（可含 \r\n，仅 help <cmd> 显示，NULL=无） */
 } scl_cmd_desc_t;
 
 /**

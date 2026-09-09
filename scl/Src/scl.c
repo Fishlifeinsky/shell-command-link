@@ -1619,7 +1619,7 @@ static void Scl_DescPrintUsage(const scl_cmd_t *nd)
 }
 
 #if (SCL_CFG_MSG_EN == 1u)
-/* 打印单命令完整明细（help <cmd>；esp_console 风格：help+usage+逐参数说明） */
+/* 打印单命令完整明细（help <cmd>；esp_console 风格：help+usage+逐参数说明+多行 doc） */
 static void Scl_DescPrintDetail(const scl_cmd_t *nd)
 {
     const scl_cmd_desc_t *d = nd->desc;
@@ -1641,6 +1641,11 @@ static void Scl_DescPrintDetail(const scl_cmd_t *nd)
             if (a->help != NULL) { Scl_Msg("  %s", a->help); }
             Scl_Msg("\r\n");
         }
+    }
+    /* v0.4a：多行详细说明（仅 help <cmd> 展示；不影响 help 全览与参数校验） */
+    if ((d != NULL) && (d->doc != NULL))
+    {
+        Scl_Msg("%s\r\n", d->doc);
     }
 }
 #endif /* SCL_CFG_MSG_EN：DescPrintDetail 仅供 help 输出 */
