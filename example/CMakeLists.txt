@@ -14,6 +14,7 @@ add_library(scl STATIC
     ${CMAKE_CURRENT_SOURCE_DIR}/../scl/Src/scl.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../scl/Src/scl_var.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../scl/Src/scl_env.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../scl/Src/scl_shell.c
 )
 target_include_directories(scl PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/../scl/Inc
@@ -27,7 +28,6 @@ target_compile_definitions(scl PRIVATE
 add_executable(scl_test
     scl_port.c
     demo_cmds.c
-    scl_shell.c
     main.c
 )
 target_link_libraries(scl_test PRIVATE scl)
@@ -43,7 +43,6 @@ endif()
 add_executable(sim_uart
     scl_port.c
     demo_cmds.c
-    scl_shell.c
     sim_uart.c
 )
 target_link_libraries(sim_uart PRIVATE scl)

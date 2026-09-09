@@ -3,14 +3,15 @@
   * @file    scl_shell.h
   * @brief   SCL 交互式命令 Shell（REPL：行编辑 + 历史 + Tab 补全）
   *
-  *          example 层、可裁剪（SCL_EX_SHELL_EN=0 裁掉）。面向 MCU 串口：
+  *          库内实现：可裁剪（SCL_EX_SHELL_EN=0 裁掉）。面向 MCU 串口：
   *            串口每收到 1 字节 → Scl_Shell_Feed(ch)；
   *            主循环周期调 Scl_Shell_Poll()（负责命令完成后打印提示符）。
   *            输出全部经初始化时给出的 out 回调（MCU 上通常是 UART 发送）。
   *
   *          按键支持（面向 ANSI 终端 / 串口助手）：
   *            Enter(CR/LF) 执行；Backspace(0x08/0x7F) 删尾；Ctrl-U(0x15) 清行；
-  *            ↑(ESC[A) / ↓(ESC[B) 历史；Tab 补全（命令名/保留字/${变量}）。
+  *            ↑(ESC[A) / ↓(ESC[B) 历史；Tab 补全（命令名/保留字/${变量}）；
+  *            方向键 + Home/End + Delete + Ctrl-W 支持。
   *            行 "quit" / "exit" 置退出请求（Scl_Shell_QuitReq 可查）。
   *
   *          注意：Shell 用 SCL_Run() 执行链式命令，要求 SCL_CFG_RUN_TEXT_EN=1；

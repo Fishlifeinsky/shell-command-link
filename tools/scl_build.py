@@ -39,7 +39,8 @@ INC = ["-I", str(ROOT / "scl" / "Inc"),
        "-I", str(ROOT / "example")]
 CORE_SRC = [str(ROOT / "scl" / "Src" / "scl.c"),
             str(ROOT / "scl" / "Src" / "scl_var.c"),
-            str(ROOT / "scl" / "Src" / "scl_env.c")]
+            str(ROOT / "scl" / "Src" / "scl_env.c"),
+            str(ROOT / "scl" / "Src" / "scl_shell.c")]
 
 ARM = "arm-none-eabi-gcc"
 ARM_MCU = ["-mcpu=cortex-m4", "-mthumb", "-std=c99"]
@@ -103,7 +104,6 @@ def build_test(name, extra=(), main="main.c"):
     srcs = [*CORE_SRC,
             str(ROOT / "example" / "scl_port.c"),
             str(ROOT / "example" / "demo_cmds.c"),
-            str(ROOT / "example" / "scl_shell.c"),
             str(ROOT / "example" / main)]
     BUILD.mkdir(exist_ok=True)
     exe = BUILD / (name + EXE)

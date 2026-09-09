@@ -1,7 +1,7 @@
 /**
   ******************************************************************************
   * @file    scl_shell.c
-  * @brief   SCL 交互式命令 Shell 实现（详见 scl_shell.h）
+  * @brief   SCL 交互式命令 Shell 实现（库内版）
   *
   *          设计：面向串口的逐字节状态机 —— 收满一行后（空闲时）交 SCL_Run()，
   *          命令完成后打印提示符。全部静态内存，无 libc。
@@ -143,7 +143,6 @@ static void Sh_HistPush(void)
     {
         return;
     }
-    /* 与最近一条相同则不重复记录 */
     if (s_hist_cnt > 0)
     {
         unsigned k;
@@ -160,7 +159,6 @@ static void Sh_HistPush(void)
     }
     else
     {
-        /* 满：整体前移丢弃最旧 */
         for (i = 0; i < (int)SCL_EX_SHELL_HIST_MAX - 1; i++)
         {
             unsigned k;
@@ -202,7 +200,6 @@ static void Sh_HistUp(void)
     }
     if (s_hist_pos < 0)
     {
-        /* 保存当前编辑行 */
         unsigned k;
         for (k = 0u; k <= s_len; k++) { s_edit[k] = s_line[k]; }
         s_hist_pos = s_hist_cnt - 1;
@@ -213,7 +210,7 @@ static void Sh_HistUp(void)
     }
     else
     {
-        return;   /* 已在最旧 */
+        return;
     }
     Sh_LineSet(s_hist[s_hist_pos]);
 }
@@ -226,7 +223,7 @@ static void Sh_HistDown(void)
     }
     if (s_hist_pos < 0)
     {
-        return;   /* 已在编辑态 */
+        return;
     }
     s_hist_pos++;
     if (s_hist_pos >= s_hist_cnt)
@@ -244,7 +241,6 @@ static void Sh_HistDown(void)
 #if (SCL_EX_SHELL_COMPLETION_EN == 1u)
 /* ========================== 补全 ========================== */
 
-/* 保留字/内置运算（与 scl.c 一致的可用输入） */
 static const char *const s_keywords[] = {
     "help", "var", "free", "label", "jump",
     "iadd", "isub", "imul", "idiv", "imod", "ineg",
@@ -254,7 +250,6 @@ static const char *const s_keywords[] = {
 };
 
 #if (SCL_CFG_CMDDESC_EN == 1u)
-/* 字节串比较（含结尾 \0；供命令查找，shell 无 libc） */
 static unsigned Sh_EqN(const char *a, const char *b, unsigned n)
 {
     unsigned i;
@@ -265,7 +260,6 @@ static unsigned Sh_EqN(const char *a, const char *b, unsigned n)
     return 1u;
 }
 
-/* 在注册命令链表中按精确名找命令（无则 NULL） */
 static const scl_cmd_t *Sh_FindCmd(const char *name)
 {
     const scl_cmd_t *nd;
@@ -276,7 +270,6 @@ static const scl_cmd_t *Sh_FindCmd(const char *name)
     return NULL;
 }
 
-/* 类型常量 → 类型名（本地映射, 与 scl.c 一致） */
 static const char *Sh_TypeName(uint8_t t)
 {
     switch (t)
@@ -288,7 +281,6 @@ static const char *Sh_TypeName(uint8_t t)
     }
 }
 
-/* 打印命令 usage 行（参数模板；esp_console 风格提示） */
 static void Sh_PrintUsage(const scl_cmd_t *nd)
 {
     const scl_cmd_desc_t *d = nd->desc;
@@ -311,8 +303,6 @@ static void Sh_PrintUsage(const scl_cmd_t *nd)
 }
 #endif /* SCL_CFG_CMDDESC_EN */
 
-/* 收集匹配 prefix 的命令名（注册命令 + 保留字）到 cand；
-   返回匹配数。带 *nunique 供歧义提示（只记首个匹配名） */
 static int Sh_CollectCands(const char *prefix, char cand[][SCL_EX_SHELL_LINE_MAX],
                            int cand_max)
 {
@@ -368,7 +358,6 @@ static int Sh_CollectCands(const char *prefix, char cand[][SCL_EX_SHELL_LINE_MAX
     return n;
 }
 
-/* 计算一组候选的最长公共前缀（用于单次按 Tab 尽量补全） */
 static unsigned Sh_CommonPrefix(char cand[][SCL_EX_SHELL_LINE_MAX], int n)
 {
     unsigned i = 0u;
@@ -395,16 +384,14 @@ static void Sh_Complete(void)
     char cand[16][SCL_EX_SHELL_LINE_MAX];
     int n;
 
-    /* 取最后一个词的起点（含空白前） */
     while ((wi > 0u) && !Sh_IsSp(s_line[wi - 1u])) { wi--; }
 
-    /* 变量引用：当前词以 "${" 开头 → 补 ${var} */
     is_var = ((s_len - wi) >= 2u) && (s_line[wi] == '$') && (s_line[wi + 1u] == '{');
     if (is_var)
     {
         char prefix[SCL_EX_SHELL_LINE_MAX];
         n = 0;
-        plen = s_len - wi - 2u;   /* "${" 之后的部分 */
+        plen = s_len - wi - 2u;
         for (i = 0u; i < plen; i++) { prefix[i] = s_line[wi + 2u + i]; }
         prefix[plen] = '\0';
         {
@@ -434,7 +421,6 @@ static void Sh_Complete(void)
     }
     else if (wi == 0u)
     {
-        /* 行首词 → 补命令名/保留字 */
         char prefix[SCL_EX_SHELL_LINE_MAX];
         plen = s_len - wi;
         for (i = 0u; i < plen; i++) { prefix[i] = s_line[wi + i]; }
@@ -443,7 +429,6 @@ static void Sh_Complete(void)
     }
     else
     {
-        /* 参数位置且非 ${：若首命令完整且带参数模板 → 提示 usage（不插入文本） */
 #if (SCL_CFG_CMDDESC_EN == 1u)
         {
             unsigned k = 0u;
@@ -465,17 +450,16 @@ static void Sh_Complete(void)
             }
         }
 #endif
-        return;   /* 参数位置且非 ${：不补全 */
+        return;
     }
 
     if (n <= 0)
     {
-        Sh_Putc(0x07u);   /* 响铃 */
+        Sh_Putc(0x07u);
         return;
     }
     if (n == 1)
     {
-        /* 唯一候选：替换整词 */
         unsigned nlen = Sh_StrLen(cand[0]);
         unsigned extra = (is_var ? (nlen + 2u) : nlen);
         if ((wi + extra) >= SCL_EX_SHELL_LINE_MAX)
@@ -483,7 +467,6 @@ static void Sh_Complete(void)
             Sh_Putc(0x07u);
             return;
         }
-        /* 删旧词：保留 wi 前内容 */
         if (is_var)
         {
             s_line[wi] = '$';
@@ -496,12 +479,12 @@ static void Sh_Complete(void)
             for (i = 0u; i < nlen; i++) { s_line[wi + i] = cand[0][i]; }
             s_len = wi + nlen;
         }
+        s_cur = s_len;
         s_line[s_len] = '\0';
         Sh_Redraw();
         return;
     }
 
-    /* 多个候选：先补公共前缀（若比当前长） */
     if (!is_var)
     {
         unsigned cp = Sh_CommonPrefix(cand, n);
@@ -510,11 +493,11 @@ static void Sh_Complete(void)
         {
             for (i = cur; i < cp; i++) { s_line[wi + i] = cand[0][i]; }
             s_len = wi + cp;
+            s_cur = s_len;
             s_line[s_len] = '\0';
             Sh_Redraw();
         }
     }
-    /* 列出候选：命令候选逐行（带 desc 一行帮助）；变量候选行内空格分隔 */
     Sh_Newline();
     for (i = 0u; i < (unsigned)n; i++)
     {
@@ -554,12 +537,12 @@ static void Sh_Complete(void)
 static void Sh_RunLine(void)
 {
     Sh_Newline();
-    /* quit / exit 退出请求 */
     if ((s_len == 4u) && (s_line[0] == 'q') && (s_line[1] == 'u') &&
         (s_line[2] == 'i') && (s_line[3] == 't'))
     {
         s_quit = 1u;
         s_len = 0u;
+        s_cur = 0u;
         s_line[0] = '\0';
         s_hist_pos = -1;
         return;
@@ -569,6 +552,7 @@ static void Sh_RunLine(void)
     {
         s_quit = 1u;
         s_len = 0u;
+        s_cur = 0u;
         s_line[0] = '\0';
         s_hist_pos = -1;
         return;
@@ -585,7 +569,7 @@ static void Sh_RunLine(void)
             {
                 Sh_Puts("[run 拒绝]\r\n");
             }
-            s_was_busy = 1u;   /* 待命令完成后打印提示 */
+            s_was_busy = 1u;
         }
         else
         {
@@ -607,7 +591,6 @@ void Scl_Shell_Init(void (*out)(char))
     s_len = 0u;
     s_cur = 0u;
     s_line[0] = '\0';
-    s_cur = 0u;
 #if (SCL_EX_SHELL_HISTORY_EN == 1u)
     s_hist_cnt = 0;
     s_hist_pos = -1;
@@ -620,8 +603,8 @@ void Scl_Shell_Init(void (*out)(char))
 #if (SCL_EX_SHELL_HISTORY_EN == 1u)
     for (i = 0u; i < SCL_EX_SHELL_LINE_MAX; i++) { s_edit[i] = '\0'; }
 #endif
-    SCL_VarKeep(1);   /* 会话模式：var 跨命令保留（free 显式释放） */
-    Sh_Puts(s_prompt);   /* 首提示符 */
+    SCL_VarKeep(1);
+    Sh_Puts(s_prompt);
 }
 
 void Scl_Shell_Feed(int ch)
@@ -674,7 +657,7 @@ void Scl_Shell_Feed(int ch)
 #endif
         return;
     }
-    if (ch == 0x1Bu)   /* ESC */
+    if (ch == 0x1Bu)
     {
         s_esc = 1u;
         return;
@@ -686,7 +669,7 @@ void Scl_Shell_Feed(int ch)
         return;
     }
 #if (SCL_EX_SHELL_EDIT_EN == 1u)
-    if ((ch == 0x08u) || (ch == 0x7Fu))   /* Backspace */
+    if ((ch == 0x08u) || (ch == 0x7Fu))
     {
         if (s_cur > 0u)
         {
@@ -700,20 +683,20 @@ void Scl_Shell_Feed(int ch)
         return;
     }
 #if (SCL_EX_SHELL_NAV_EN == 1u)
-    if (ch == 0x01u)   /* Ctrl-A：行首 */
+    if (ch == 0x01u)
     {
         s_cur = 0u; Sh_Redraw(); return;
     }
-    if (ch == 0x05u)   /* Ctrl-E：行尾 */
+    if (ch == 0x05u)
     {
         s_cur = s_len; Sh_Redraw(); return;
     }
-    if (ch == 0x0Bu)   /* Ctrl-K：删到行尾 */
+    if (ch == 0x0Bu)
     {
         s_len = s_cur; s_line[s_len] = '\0'; Sh_Redraw(); return;
     }
 #endif
-    if (ch == 0x15u)   /* Ctrl-U：清行 */
+    if (ch == 0x15u)
     {
         s_cur = 0u;
         s_len = 0u;
@@ -722,7 +705,7 @@ void Scl_Shell_Feed(int ch)
         return;
     }
 #if (SCL_EX_SHELL_WORD_EN == 1u)
-    if (ch == 0x17u)   /* Ctrl-W：删除前一个单词 */
+    if (ch == 0x17u)
     {
         unsigned start = s_cur;
         while ((start > 0u) && Sh_IsSp(s_line[start - 1u]))
@@ -780,7 +763,7 @@ void Scl_Shell_Poll(void)
     unsigned busy = (SCL_Idle() == 0u) ? 1u : 0u;
     if ((s_was_busy != 0u) && (busy == 0u))
     {
-        Sh_Puts(s_prompt);   /* 命令完成 → 提示 */
+        Sh_Puts(s_prompt);
     }
     s_was_busy = busy;
 }

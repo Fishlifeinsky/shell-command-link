@@ -608,60 +608,187 @@ static void Scl_PutU32(uint32_t v)
     }
 }
 
+static void Scl_PutU32Padded(uint32_t v, unsigned int width, int zero_pad, int base_hex)
+{
+    char tmp[16u];
+    unsigned int i = 0u;
+    unsigned int digits = 0u;
+    uint32_t x = v;
+
+    if (v == 0u)
+    {
+        digits = 1u;
+    }
+    else
+    {
+        while (x > 0u)
+        {
+            uint32_t d = x % ((base_hex) ? 16u : 10u);
+            tmp[i++] = (char)((d < 10u) ? ('0' + d) : ('A' + (d - 10u)));
+            x /= ((base_hex) ? 16u : 10u);
+        }
+        digits = i;
+    }
+
+    if (width > digits)
+    {
+        unsigned int pad = width - digits;
+        while (pad-- > 0u)
+        {
+            SCL_Port_PutChar(zero_pad ? '0' : ' ');
+        }
+    }
+
+    if (v == 0u)
+    {
+        SCL_Port_PutChar('0');
+        return;
+    }
+
+    while (i > 0u)
+    {
+        i--;
+        SCL_Port_PutChar(tmp[i]);
+    }
+}
+
 static void Scl_VMsg(const char *fmt, va_list ap)
 {
     while (*fmt != '\0')
     {
         if (*fmt == '%')
         {
-            fmt++;
-            if (*fmt == 's')
+            const char *p = fmt + 1u;
+            unsigned int width = 0u;
+            int zero_pad = 0;
+            if (*p == '0')
+            {
+                zero_pad = 1;
+                p++;
+            }
+            while ((*p >= '0') && (*p <= '9'))
+            {
+                width = width * 10u + (unsigned int)(*p - '0');
+                p++;
+            }
+
+            if (*p == 's')
             {
                 const char *s = va_arg(ap, const char *);
                 if (s == NULL) { s = "(null)"; }
                 while (*s != '\0') { SCL_Port_PutChar(*s); s++; }
+                fmt = p + 1u;
             }
-            else if (*fmt == 'c')
+            else if (*p == 'c')
             {
                 SCL_Port_PutChar((char)va_arg(ap, int));
+                fmt = p + 1u;
             }
-            else if (*fmt == 'd')
+            else if (*p == 'd')
             {
                 int v = va_arg(ap, int);
                 if (v < 0)
                 {
                     SCL_Port_PutChar('-');
+                    if (width > 1u)
+                    {
+                        unsigned int n = (unsigned int)(-(int32_t)v);
+                        unsigned int digits = 1u;
+                        uint32_t x = n;
+                        while (x >= 10u)
+                        {
+                            x /= 10u;
+                            digits++;
+                        }
+                        if (width > digits)
+                        {
+                            while (width-- > digits) { SCL_Port_PutChar(zero_pad ? '0' : ' '); }
+                        }
+                    }
                     Scl_PutU32((uint32_t)(-(int32_t)v));
                 }
                 else
                 {
+                    if (width > 1u)
+                    {
+                        unsigned int digits = 1u;
+                        uint32_t x = (uint32_t)v;
+                        while (x >= 10u)
+                        {
+                            x /= 10u;
+                            digits++;
+                        }
+                        if (width > digits)
+                        {
+                            while (width-- > digits) { SCL_Port_PutChar(zero_pad ? '0' : ' '); }
+                        }
+                    }
                     Scl_PutU32((uint32_t)v);
                 }
+                fmt = p + 1u;
             }
-            else if (*fmt == 'u')
+            else if (*p == 'u')
             {
-                Scl_PutU32((uint32_t)va_arg(ap, unsigned int));
-            }
-            else if (*fmt == 'x')
-            {
-                uint32_t v = (uint32_t)va_arg(ap, unsigned int);
-                int shift;
-                uint8_t started = 0u;
-                for (shift = 28; shift >= 0; shift -= 4)
+                unsigned int v = (unsigned int)va_arg(ap, unsigned int);
+                if (width > 1u)
                 {
-                    uint8_t d = (uint8_t)((v >> shift) & 0x0Fu);
-                    if ((d != 0u) || started || (shift == 0))
+                    unsigned int digits = 1u;
+                    uint32_t x = (uint32_t)v;
+                    while (x >= 10u)
                     {
-                        started = 1u;
-                        SCL_Port_PutChar((d < 10u) ? (char)('0' + d) : (char)('A' + (d - 10u)));
+                        x /= 10u;
+                        digits++;
+                    }
+                    if (width > digits)
+                    {
+                        while (width-- > digits) { SCL_Port_PutChar(zero_pad ? '0' : ' '); }
                     }
                 }
+                Scl_PutU32((uint32_t)v);
+                fmt = p + 1u;
             }
-            else if (*fmt == '%')
+            else if (*p == 'x')
+            {
+                uint32_t v = (uint32_t)va_arg(ap, unsigned int);
+                if (width > 0u)
+                {
+                    unsigned int digits = 1u;
+                    uint32_t x = v;
+                    while (x >= 16u)
+                    {
+                        x /= 16u;
+                        digits++;
+                    }
+                    if (width > digits)
+                    {
+                        while (width-- > digits) { SCL_Port_PutChar('0'); }
+                    }
+                }
+                {
+                    int shift;
+                    uint8_t started = 0u;
+                    for (shift = 28; shift >= 0; shift -= 4)
+                    {
+                        uint8_t d = (uint8_t)((v >> shift) & 0x0Fu);
+                        if ((d != 0u) || started || (shift == 0) || (width == 0u))
+                        {
+                            started = 1u;
+                            SCL_Port_PutChar((d < 10u) ? (char)('0' + d) : (char)('A' + (d - 10u)));
+                        }
+                    }
+                }
+                fmt = p + 1u;
+            }
+            else if (*p == '%')
             {
                 SCL_Port_PutChar('%');
+                fmt = p + 1u;
             }
-            fmt++;
+            else
+            {
+                SCL_Port_PutChar('%');
+                fmt = fmt + 1u;
+            }
         }
         else
         {
@@ -1623,6 +1750,10 @@ static void Scl_DoHelp(void)
         {
             Scl_Msg("      ");
             Scl_DescPrintUsage(node);   /* 模板概要（usage 行） */
+        }
+        if ((node->desc != NULL) && (node->desc->doc != NULL))
+        {
+            Scl_Msg("      %s", node->desc->doc);
         }
 #endif
     }

@@ -141,14 +141,14 @@ python tools/scl_build.py sizes      # ARM(Cortex-M4) 各裁剪档 Flash/RAM（�
 ```bash
 gcc -O2 -Wall -Wextra -I scl/Inc -I scl/Src -I example \
     scl/Src/scl.c scl/Src/scl_var.c scl/Src/scl_env.c \
-    example/scl_port.c example/demo_cmds.c \
-    example/scl_shell.c example/main.c -o build/scl_test        # 全量测试(含 Shell)
+  scl/Src/scl_shell.c example/scl_port.c example/demo_cmds.c \
+  example/main.c -o build/scl_test        # 全量测试(含 Shell)
 
 # 交互终端：把 PC 终端当 MCU 串口（echo/var/Tab 补全/↑↓ 历史/quit）
 gcc -O2 -Wall -Wextra -I scl/Inc -I scl/Src -I example \
     scl/Src/scl.c scl/Src/scl_var.c scl/Src/scl_env.c \
-    example/scl_port.c example/demo_cmds.c \
-    example/scl_shell.c example/sim_uart.c -o build/sim_uart && ./build/sim_uart
+  scl/Src/scl_shell.c example/scl_port.c example/demo_cmds.c \
+  example/sim_uart.c -o build/sim_uart && ./build/sim_uart
 ```
 
 ## 固定脚本最省 RAM：预编译只读程序（s2c→C）
