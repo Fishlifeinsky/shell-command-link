@@ -39,8 +39,13 @@ extern "C" {
 #define SCL_CFG_VAR_VALUE_MAX    16u
 #endif
 
-/* mini-scl 共享运行时开关：1=启用（含外部变量绑定路由 SCL_VarBind 等）；
-   0=裁掉（默认）。mini 生成的 .c 需在 SCL_CFG_MINI_EN=1 下编译运行。 */
+/* ============================ 主开关：普通态 / mini 态（二选一） ============================ */
+
+/* SCL 只有两种形态，由本主开关决定（无需/不建议再手设其它裁剪宏）：
+   0=普通态：文本指令链 SCL_Run + 预编译 SCL_RunProg + env + 描述 + 全消息；
+   1=mini 态：解释器收敛为最简 argc/argv 解析（SCL_RunLine/SCL_CmdInvoke），
+     自动派生：RUN_TEXT=0、RUN_PROG=0、ENV=0、SCMD=0、消息默认级=ERR；
+     描述(CMDDESC)仍保留。各宏仍可用 -D...=x 单独覆盖。 */
 #ifndef SCL_CFG_MINI_EN
 #define SCL_CFG_MINI_EN         0u
 #endif
@@ -51,9 +56,14 @@ extern "C" {
 #endif
 
 /* 消息运行级默认值：运行时把 SCL_MsgLvl 设为 SCL_CFG_MSG_LVL（枚举见 scl.h）。
-   0=全静默；SCL_MSG_ALL(0xFF)=全量。编译不裁剪消息代码，仅按级别运行开关。 */
+   0=全静默；SCL_MSG_ALL(0xFF)=全量。编译不裁剪消息代码，仅按级别运行开关。
+   普通态默认全量；mini 态默认仅错误。 */
 #ifndef SCL_CFG_MSG_LVL
-#define SCL_CFG_MSG_LVL        0xFFu
+#if (SCL_CFG_MINI_EN != 0u)
+#define SCL_CFG_MSG_LVL         1u      /* mini：默认只出错误 */
+#else
+#define SCL_CFG_MSG_LVL         0xFFu   /* 普通：默认全量 */
+#endif
 #endif
 
 /* 动态内存模式：1=由 SCL_InitEx 提供的 allocator 管理运行缓冲；0=静态数组。
@@ -103,26 +113,38 @@ extern "C" {
 /* ============================ 执行源（可裁剪） ============================ */
 
 /* 动态文本脚本支持：SCL_Run() 读取文本 → 运行时编译进 RAM 字节码/参数缓存执行。
-   1=支持（占 RAM：字节码/参数缓存/label 表/中间指令表）；
-   0=裁剪整段（省 RAM，需用 Flash 预编译程序 SCL_RunProg 执行固定脚本） */
+   普通态默认 1；mini 态由主开关派生为 0（只留最简 argc/argv 入口） */
 #ifndef SCL_CFG_RUN_TEXT_EN
+#if (SCL_CFG_MINI_EN != 0u)
+#define SCL_CFG_RUN_TEXT_EN      0u
+#else
 #define SCL_CFG_RUN_TEXT_EN      1u
+#endif
 #endif
 
 /* 预编译只读程序支持：SCL_RunProg() 直接解释 const 程序（数据放 Flash，几乎不占 RAM）。
-   1=支持；0=裁剪 */
+   普通态默认 1；mini 态派生为 0 */
 #ifndef SCL_CFG_RUN_PROG_EN
+#if (SCL_CFG_MINI_EN != 0u)
+#define SCL_CFG_RUN_PROG_EN      0u
+#else
 #define SCL_CFG_RUN_PROG_EN      1u
 #endif
+#endif
 
-#if ((SCL_CFG_RUN_TEXT_EN) == 0u) && ((SCL_CFG_RUN_PROG_EN) == 0u)
-#error "SCL_CFG_RUN_TEXT_EN 与 SCL_CFG_RUN_PROG_EN 至少需一个为 1"
+/* 普通态至少需要一个解释器；mini 态允许全关（只留最简 argc/argv 解释器） */
+#if ((SCL_CFG_RUN_TEXT_EN) == 0u) && ((SCL_CFG_RUN_PROG_EN) == 0u) && ((SCL_CFG_MINI_EN) == 0u)
+#error "普通态需 SCL_CFG_RUN_TEXT_EN 与 SCL_CFG_RUN_PROG_EN 至少一个为 1；mini 态请置 SCL_CFG_MINI_EN=1"
 #endif
 
 /* 脚本命令（s2c 编译产物注册成命令）总开关：1=SCL_Scmd_* 可用；0=裁掉。
-   执行用 SCL_RunProg（预编译 const 程序），故需 SCL_CFG_RUN_PROG_EN=1 */
+   执行用 SCL_RunProg（预编译 const 程序），故需 SCL_CFG_RUN_PROG_EN=1；mini 态派生为 0 */
 #ifndef SCL_CFG_SCMD_EN
+#if (SCL_CFG_MINI_EN != 0u)
+#define SCL_CFG_SCMD_EN      0u
+#else
 #define SCL_CFG_SCMD_EN      1u
+#endif
 #endif
 
 /* ============================ 环境变量缓冲（持久配置） ============================ */
