@@ -39,6 +39,17 @@ extern "C" {
 #define SCL_CFG_VAR_VALUE_MAX    16u
 #endif
 
+/* mini-scl 共享运行时开关：1=启用（含外部变量绑定路由 SCL_VarBind 等）；
+   0=裁掉（默认）。mini 生成的 .c 需在 SCL_CFG_MINI_EN=1 下编译运行。 */
+#ifndef SCL_CFG_MINI_EN
+#define SCL_CFG_MINI_EN         0u
+#endif
+
+/* 外部绑定变量条数上限（mini 程序把类型化静态变量注册成路由表的容量） */
+#ifndef SCL_CFG_VAR_BIND_MAX
+#define SCL_CFG_VAR_BIND_MAX    8u
+#endif
+
 /* 动态内存模式：1=由 SCL_InitEx 提供的 allocator 管理运行缓冲；0=静态数组。
    动态模式下变量名/值按需分配，解释器工作区在初始化时分配。 */
 #ifndef SCL_CFG_DYNAMIC_MEM_EN

@@ -2,13 +2,13 @@
 
 本目录把 SCL 的整套能力收束成一个**可直接照抄的 MCU 工程模板**：
 
-- `scl_stm32_port.h/.c` —— STM32 HAL 串口移植层（输出 + 中断接收喂 Shell）
-- `mcu_main_template.c` —— 并入 CubeMX 工程的 `main()` 骨架（env 固化 + const 自检程序 + Shell + 主循环）
+- `scl_stm32_port.h/.c` —— STM32 HAL 串口移植层（输出 + env 固化用户存储）
+- `mcu_main_template.c` —— 并入 CubeMX 工程的 `main()` 骨架（env 固化 + const 自检程序 + 主循环）
 - `boot.s2c` —— 开机自检脚本示例（现代语法；固定脚本 → const 程序最省 RAM）
 - `mcu_boot_sim.c` —— **PC 可编译的整体骨架自检**（先无板验证 main 骨架逻辑正确）
 
 > 库本身对 MCU 的唯一硬要求是提供 `void SCL_Port_PutChar(char c)`（`SCL_CFG_MSG_EN=0` 时可省略）；
-> Shell 需要把串口每收到 1 字节喂给 `Scl_Shell_Feed()`；env 固化是把 `Scl_Env_Save` 的缓冲写进你的 Flash/EEPROM。
+> env 固化是把 `Scl_Env_Save` 的缓冲写进你的 Flash/EEPROM。
 
 ---
 
@@ -17,15 +17,12 @@
 ```mermaid
 flowchart LR
     subgraph MCU[MCU 主循环 while(1)]
-        A[串口 RX 中断] -->|Scl_Shell_Feed 逐字节| SH[SCL Shell]
         B[SCL_Loop 推进脚本] --- C[SCL 库核心]
-        D[Scl_Shell_Poll 打印提示] --> TX[串口 TX]
         E[(用户 Flash/EEPROM)] <-->|Scl_Env_Save/Load| ENV[env 缓冲]
         BOOT[const 自检程序 SCL_RunProg] --> C
     end
-    TX --> A
+    TX[串口 TX] --- C
     C -->|SCL_Port_PutChar| TX
-    SH --> B
     ENV --> C
 ```
 
@@ -34,10 +31,9 @@ flowchart LR
 1. 系统时钟/GPIO/UART 由 CubeMX 生成；
 2. `SCL_Init()` → 注册业务命令（`SCL_CmdRegisterDesc`）；
 3. `Scl_Env_RegisterDefault(默认配置表, n)` → `Scl_Env_Load(存储)`（无存储/坏存储回退默认）；
-4. 需要时 `Scl_Shell_Init(UART发送)`（交互，可裁剪）；
-5. 上电自检：`SCL_RunProg(&scl_boot_prog)` 执行 const 程序；
-6. `while(1){ SCL_Loop(); Scl_Shell_Poll(); 周期任务(); }`；
-7. 配置被改动后调用 `Scl_Env_Save` 固化到你的存储。
+4. 上电自检：`SCL_RunProg(&scl_boot_prog)` 执行 const 程序；
+5. `while(1){ SCL_Loop(); 周期任务(); }`；
+6. 配置被改动后调用 `Scl_Env_Save` 固化到你的存储。
 
 ---
 
@@ -45,7 +41,7 @@ flowchart LR
 
 | 文件 | 作用 | 是否参与本仓库编译 |
 |---|---|---|
-| `scl_stm32_port.h/.c` | STM32 HAL UART 移植层（库只要求 PutChar；Shell 需要 RX 逐字节 Feed） | 否（需 STM32 HAL） |
+| `scl_stm32_port.h/.c` | STM32 HAL UART 移植层（库只要求 PutChar；env 固化用用户存储样板） | 否（需 STM32 HAL） |
 | `mcu_main_template.c` | `main()` 的 SCL 集成骨架（含 env 固化与 const 自检整合） | 否（并入 CubeMX 工程） |
 | `boot.s2c` | 示例现代脚本（编译成指令链 → const 程序） | ——（被 emit 工具读取） |
 | `mcu_boot_sim.c` | 同一套“集成逻辑”的 PC 无板自检（见 §4） | 是（PC gcc 可跑） |
@@ -96,4 +92,4 @@ python -c "import subprocess;print(subprocess.run(['build/mcu_boot_sim'],capture
 - 模拟重启清空 → `Scl_Env_Load` 恢复 → 校验固化值优先。
 
 > 有真实板后：把 `boot.s2c` 换成 `scl_emit_c.py` 产物 + `SCL_RunProg`，
-> 把“用户存储”换成你的 Flash/EEPROM，交互时再并上 `scl_shell.c`（见 `sim_uart.c` 思路）。
+> 把“用户存储”换成你的 Flash/EEPROM。

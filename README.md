@@ -28,18 +28,14 @@
 - **预编译只读程序（s2c→C，省 RAM）**：`scl_emit_c.py` 把脚本编译成 const
   字节码放 Flash，`SCL_RunProg()` 直接执行，**不占 RAM 字节码/参数缓存/label**；
   可 `SCL_CFG_RUN_TEXT_EN=0` 裁掉动态编译器（固定脚本最省 RAM 用法）
-- **交互 Shell**（example/scl_shell）：串口 REPL —— 行编辑/历史 ↑↓/Tab 补全
-  命令与 `${var}`；多候选逐行列出并带命令 desc 一行帮助；参数位 Tab 提示 usage
-  （与 CMDDESC 联动）；`SCL_VarKeep(1)` 会话变量跨命令保留
 - **环境变量缓冲（持久配置）**：默认配置表装载 → 脚本 `${}`/命令/运算只读可见；
   `Scl_Env_Set` 修改；`Scl_Env_Save/Load` 序列化固化到用户自有存储(EEPROM/Flash/文件)
   与恢复；坏存储自动回退默认（`SCL_CFG_ENV_MAX` 可裁剪）
 - **可选动态内存**：`SCL_CFG_DYNAMIC_MEM_EN=1` 时由应用提供 `alloc/realloc/free + ctx`，
   `SCL_InitEx()` 初始化最小运行缓冲，变量名和值按需分配；`cache`/`cache gc`/
   `cache zombie` 查询和回收缓存
-- **MCU 串口模拟**（example/sim_uart）：把 PC 终端当串口体验/调试
 - **MCU(STM32) 移植模板**（example/mcu_template）：真实工程样板 —— HAL UART 移植层
-  + main 集成骨架（env 固化 + const 自检程序 + Shell）+ PC 无板自检（mcu_boot_sim）
+  + main 集成骨架（env 固化 + const 自检程序）+ PC 无板自检（mcu_boot_sim）
 - **脚本结束自动全释放**（默认）；置 `SCL_VarKeep(1)` 后保留为会话变量
 - **汇编式控制流**：`label 名` 设跳转点；`jump [-a] 名`（-a=G_RETURN 真跳）
 - **文本→字节码**：指令固定 4 字节（opc + 参数偏移），命令注册自动分配 opcode
@@ -78,7 +74,6 @@ SCL 核心约为：代码 `.text` 22.4 KB、只读数据 `.rdata` 5.0 KB、静�
 | `doc/arc/v03-brainstorm.md` / `v03-plan.md` | **v0.3 头脑风暴/计划**：完整表达式·for·位运算·循环保护·交互终端 |
 | `doc/arc/script2chain-design.md` | 现代脚本→指令链 转译器设计（语法与映射） |
 | `doc/arc/scl-const-prog.md` | **v0.3**：预编译只读程序（s2c→C，省 RAM）设计 |
-| `doc/arc/scl-shell-sim.md` | **v0.3**：交互 Shell + MCU 串口模拟 + VarKeep |
 | `doc/arc/scl-env-buffer.md` | **v0.3**：环境变量缓冲（默认装载/固化/恢复） |
 | `doc/arc/scl-cmddesc.md` | **v0.3**：多模块源码 + 命令描述注册辅助（argtable3 风格） |
 | `doc/arc/scl-dynamic-mem.md` | **v0.4**：可选动态内存、变量懒分配与 cache/GC |
@@ -99,7 +94,7 @@ tools/scl_emit_c.py           SCL 脚本 → const C 程序（Flash 只读，省
 tools/s2c_test.py             转译器测试（精确比对 + 真实回喂 + emit-c）
 tools/scl_build.py            统一构建/测试/尺寸（PC 全量 + ARM 裁剪矩阵/尺寸）
 example/                      PC 示例（main.c 全量测试 / chain_runner 回喂 /
-                              scl_shell 交互 Shell / sim_uart 串口模拟 / s2c/*.s2c）
+                              s2c/*.s2c）
 example/mcu_template/         MCU(STM32) 移植模板（HAL port + main 骨架 + PC 自检）
 ```
 
@@ -141,14 +136,8 @@ python tools/scl_build.py sizes      # ARM(Cortex-M4) 各裁剪档 Flash/RAM（�
 ```bash
 gcc -O2 -Wall -Wextra -I scl/Inc -I scl/Src -I example \
     scl/Src/scl.c scl/Src/scl_var.c scl/Src/scl_env.c \
-  scl/Src/scl_shell.c example/scl_port.c example/demo_cmds.c \
-  example/main.c -o build/scl_test        # 全量测试(含 Shell)
-
-# 交互终端：把 PC 终端当 MCU 串口（echo/var/Tab 补全/↑↓ 历史/quit）
-gcc -O2 -Wall -Wextra -I scl/Inc -I scl/Src -I example \
-    scl/Src/scl.c scl/Src/scl_var.c scl/Src/scl_env.c \
-  scl/Src/scl_shell.c example/scl_port.c example/demo_cmds.c \
-  example/sim_uart.c -o build/sim_uart && ./build/sim_uart
+    example/scl_port.c example/demo_cmds.c \
+    example/main.c -o build/scl_test        # 全量测试
 ```
 
 ## 固定脚本最省 RAM：预编译只读程序（s2c→C）

@@ -39,8 +39,7 @@ INC = ["-I", str(ROOT / "scl" / "Inc"),
        "-I", str(ROOT / "example")]
 CORE_SRC = [str(ROOT / "scl" / "Src" / "scl.c"),
             str(ROOT / "scl" / "Src" / "scl_var.c"),
-            str(ROOT / "scl" / "Src" / "scl_env.c"),
-            str(ROOT / "scl" / "Src" / "scl_shell.c")]
+            str(ROOT / "scl" / "Src" / "scl_env.c")]
 
 ARM = "arm-none-eabi-gcc"
 ARM_MCU = ["-mcpu=cortex-m4", "-mthumb", "-std=c99"]
@@ -115,12 +114,14 @@ def build_test(name, extra=(), main="main.c"):
 
 def cmd_test(_a):
     ok = True
-    print("\n== PC 全量测试（默认档，含 Shell/CMDDESC） ==")
+    print("\n== PC 全量测试（默认档，含 CMDDESC） ==")
     ok &= build_test("scl_test")
     print("\n== PC 全量测试（SCL_CFG_CMDDESC_EN=0 变体） ==")
     ok &= build_test("scl_test_nd", ("-DSCL_CFG_CMDDESC_EN=0",))
     print("\n== MCU main 骨架无板自检（mcu_template/mcu_boot_sim.c） ==")
     ok &= build_test("mcu_boot_sim", main=pathlib.Path("mcu_template") / "mcu_boot_sim.c")
+    print("\n== mini-scl 自包含状态机自检（example/mini/boot_mini_sim.c） ==")
+    ok &= build_test("mini_boot_sim", main=pathlib.Path("mini") / "boot_mini_sim.c")
     print("\n== 转译器 s2c_test（精确比对 + 真实回喂 + emit-c） ==")
     r = sh([sys.executable, str(ROOT / "tools" / "s2c_test.py")])
     print(dec(r.stdout))

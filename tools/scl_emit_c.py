@@ -411,6 +411,9 @@ def main(argv=None):
     ap.add_argument("--cmd", default=None,
                     help="生成脚本命令注册（命令名，如 focus）：尾部加 free、输出 scmd 节点与 "
                          "Scl_Scmd_Register_<name>()；命令行输入 '<cmd> 参数...' 直接执行本脚本")
+    ap.add_argument("--mini", action="store_true",
+                    help="mini-scl：不生成字节码+解释器，改为生成自包含 switch 状态机 C "
+                         "(<name>_mini_start/step)，运行时不再需要文本编译/字节码解释/label 表")
     # 现代语法解析参数（对齐 scl_script2chain.translate）
     ap.add_argument("--ret-setter", default="setret")
     ap.add_argument("--var-max", type=int, default=4)
@@ -443,23 +446,38 @@ def main(argv=None):
             print("emit-c: 警告: " + w, file=sys.stderr)
         note = "%s (现代语法 .s2c)" % args.input
 
-    try:
-        bc, argc = encode_chain(chain)
-    except EncError as e:
-        print("emit-c: error: %s" % e, file=sys.stderr)
-        return 1
-
     if args.name:
         name = args.name
     else:
         base = os.path.basename(args.input)
         name = "".join(ch for ch in base.split(".")[0] if ch.isalnum() or ch == "_") or "prog"
 
-    cmd = args.cmd
-    if cmd is not None:
-        # 脚本命令：字节码末尾追加一条无参 free（执行完自动释放 arg* 与本命令变量）
-        bc = bc + [0x00, META_OPC["free"] & 0xFF, 0x00, 0x00]
-    text = emit_c(name, bc, argc, note, cmd=cmd)
+    if args.mini:
+        if args.cmd is not None:
+            print("emit-c: error: --mini 与 --cmd 互斥（mini 为自包含程序，不注册为命令）",
+                  file=sys.stderr)
+            return 1
+        try:
+            import scl_mini_c
+        except Exception as e:                      # noqa: BLE001
+            print("emit-c: error: 无法加载 scl_mini_c 模块: %s" % e, file=sys.stderr)
+            return 1
+        try:
+            text = scl_mini_c.emit_mini_c(name, chain, note)
+        except scl_mini_c.MiniError as e:
+            print("emit-c: error: %s" % e, file=sys.stderr)
+            return 1
+    else:
+        try:
+            bc, argc = encode_chain(chain)
+        except EncError as e:
+            print("emit-c: error: %s" % e, file=sys.stderr)
+            return 1
+        cmd = args.cmd
+        if cmd is not None:
+            # 脚本命令：字节码末尾追加一条无参 free（执行完自动释放 arg* 与本命令变量）
+            bc = bc + [0x00, META_OPC["free"] & 0xFF, 0x00, 0x00]
+        text = emit_c(name, bc, argc, note, cmd=cmd)
 
     if args.output:
         try:

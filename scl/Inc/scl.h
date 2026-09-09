@@ -410,6 +410,90 @@ int SCL_VarKeep(int keep);
   */
 const scl_cmd_t *SCL_CmdHead(void);
 
+#if (SCL_CFG_MINI_EN != 0u)
+
+/* ============================ mini：外部静态变量绑定路由（SCL_CFG_MINI_EN） ============================ */
+
+/**
+  * @brief  绑定变量的文本 getter（取当前值文本；未定义返回 NULL）
+  */
+typedef const char *(*scl_var_get_t)(void);
+
+/**
+  * @brief  绑定变量的文本 setter（写类型化静态存储）
+  * @param  text 规范文本（int→十进制；bool→true/false；flag→"-x"；string→原文）
+  * @retval 0=成功；-5=只读(const)；-3=值非法
+  */
+typedef int (*scl_var_set_t)(const char *text);
+
+/**
+  * @brief  一个"外部绑定变量"：由 mini 生成代码把其 static 变量注册进 SCL，
+  *         SCL_VarGet/SCL_VarSet(T) 等会路由到这里（先于会话/env）。
+  * @note   不占会话槽、无生命周期管理 → 无需 free。name 需符合变量名规则
+  */
+typedef struct scl_var_bind
+{
+    const char   *name;   /* 变量名 */
+    uint8_t       type;   /* SCL_T_BOOL/INT/FLAG/STR */
+    scl_var_get_t get;    /* 取文本（未定义返回 NULL） */
+    scl_var_set_t set;    /* 写类型化存储 */
+} scl_var_bind_t;
+
+/**
+  * @brief  注册一批绑定变量（mini 生成代码在 <name>_mini_register() 里调用）
+  * @param  tab 描述数组（表项为 const，表项生命周期需贯穿运行期）
+  * @param  n   条数
+  * @retval 成功注册条数（容量 SCL_CFG_VAR_BIND_MAX 满则截断）
+  * @note   同名重复注册视为更新（覆盖旧绑定）
+  */
+int SCL_VarBind(const scl_var_bind_t *tab, int n);
+
+/**
+  * @brief  清空绑定路由表
+  */
+void SCL_VarBindClear(void);
+
+#endif /* SCL_CFG_MINI_EN */
+
+/* ============================ 命令编程式调用（供自包含生成代码 / 宿主直接调命令） ============================ */
+
+/**
+  * @brief  单个调用参数：文本 + 类型（库会拷进工作缓冲；text 只需在调用期间有效）
+  * @note   type 取 SCL_T_BOOL/INT/FLAG/STR；传 0 视为 STR。
+  *         int 用十进制文本；bool 用 true/false；flag 用 "-x"；string 用原文
+  */
+typedef struct scl_invoke_arg
+{
+    const char *text;   /* 参数文本 */
+    uint8_t     type;   /* SCL_T_BOOL/INT/FLAG/STR（0=按 STR） */
+} scl_invoke_arg_t;
+
+/**
+  * @brief  编程式按名调用一条注册命令（不经字节码/解释器）
+  * @param  name  命令名（不能为保留关键字对应的元命令）
+  * @param  argc  参数个数
+  * @param  argv  参数数组（可为 NULL 当 argc==0）
+  * @retval 0=命令不存在/参数非法(已打印)/desc 校验拒绝；1=已同步执行完；
+  *         2=已发起异步命令（需周期调 SCL_AsyncPoll() 等待完成）
+  * @note   供"自包含生成代码"（如把脚本编译成 switch 状态机的 mini 模式）与
+  *         宿主 C 代码直接调命令使用，行为与解释器 CALLN 一致（含 desc 模板校验）。
+  *         文本长度受 SCL_CFG_ARG_LEN_MAX 限制，超长会被截断/拒绝。
+  */
+uint8_t SCL_CmdInvoke(const char *name, int argc, const scl_invoke_arg_t *argv);
+
+/**
+  * @brief  是否有异步命令在等待完成（供生成代码轮询）
+  * @retval 1=有；0=无
+  */
+uint8_t SCL_AsyncBusy(void);
+
+/**
+  * @brief  推进一次异步等待轮询
+  * @retval 1=等待的命令已完成并清除（可继续下一步）；0=仍在进行；
+  *         -1=当前无异步等待
+  */
+int SCL_AsyncPoll(void);
+
 /**
   * @brief  按索引遍历已用变量名（供 shell 补全 / 调试）
   * @param  idx  序号（0 起）

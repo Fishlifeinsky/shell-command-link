@@ -69,6 +69,95 @@ static void Scl_VarClearSlot(scl_var_t *slot)
     slot->ro = 0u;
 }
 
+/* ========================== mini：外部静态变量绑定路由（SCL_CFG_MINI_EN） ========================== */
+/* mini 生成代码把"类型化 C 静态变量"注册进此表；SCL_VarGet/SCL_VarSet(T) 先查这里，
+   命中即路由到 get/set 函数（落在生成代码的静态存储上）。不占会话槽、无生命周期管理。 */
+
+#if (SCL_CFG_MINI_EN != 0u)
+
+typedef struct
+{
+    const char    *name;   /* 变量名 */
+    uint8_t        type;   /* SCL_T_BOOL/INT/FLAG/STR */
+    scl_var_get_t  get;    /* 取文本；未定义返回 NULL */
+    scl_var_set_t  set;    /* 写类型化存储；0=成功 负=拒绝 */
+} scl_bind_t;
+
+static scl_bind_t s_binds[SCL_CFG_VAR_BIND_MAX];
+static int s_bind_cnt = 0;
+
+void SCL_VarBindClear(void)
+{
+    s_bind_cnt = 0;
+}
+
+int SCL_VarBind(const scl_var_bind_t *tab, int n)
+{
+    int k;
+    int i;
+    if ((tab == NULL) || (n <= 0))
+    {
+        return 0;
+    }
+    if (n > (int)SCL_CFG_VAR_BIND_MAX)
+    {
+        n = (int)SCL_CFG_VAR_BIND_MAX;
+    }
+    k = s_bind_cnt;
+    for (i = 0; i < n; i++)
+    {
+        int f;
+        if ((tab[i].name == NULL) || (tab[i].name[0] == '\0') ||
+            (tab[i].get == NULL) || (tab[i].set == NULL))
+        {
+            continue;
+        }
+        f = -1;
+        {
+            int j;
+            for (j = 0; j < s_bind_cnt; j++)
+            {
+                if (Scl_StrEq(s_binds[j].name, tab[i].name)) { f = j; break; }
+            }
+        }
+        if (f < 0)
+        {
+            if (k >= (int)SCL_CFG_VAR_BIND_MAX) { break; }   /* 满 */
+            f = k++;
+            s_bind_cnt = k;
+        }
+        s_binds[f].name = tab[i].name;
+        s_binds[f].type = tab[i].type;
+        s_binds[f].get  = tab[i].get;
+        s_binds[f].set  = tab[i].set;
+    }
+    return (s_bind_cnt > 0) ? s_bind_cnt : 0;
+}
+
+static int Scl_BindFind(const char *name)
+{
+    int i;
+    if (name == NULL) { return -1; }
+    for (i = 0; i < s_bind_cnt; i++)
+    {
+        if (Scl_StrEq(s_binds[i].name, name)) { return i; }
+    }
+    return -1;
+}
+
+/* 命中绑定则写入：规范化文本后交给 set（同会话 VarSetT 语义）。返回 0/负错误码 */
+static int Scl_BindSet(int idx, uint8_t type, const char *val)
+{
+    char norm[SCL_CFG_VAR_VALUE_MAX];
+    if ((val == NULL) || (Scl_VarNorm(type, val, norm, (uint16_t)sizeof(norm)) != 0))
+    {
+        return -3;
+    }
+    return s_binds[idx].set(norm);
+}
+
+#endif /* SCL_CFG_MINI_EN */
+
 /* ========================== 变量实现（v0.2 类型化） ========================== */
 
 static int Scl_VarFind(const char *name)
@@ -276,22 +365,43 @@ static int Scl_VarSetCore(const char *name, uint8_t type, const char *val)
     return Scl_VarSetCoreEx(name, type, val, 0u);
 }
 
-/* 自动推断类型设置（C 命令便捷用） */
+/* 自动推断类型设置（C 命令便捷用）。命中 mini 绑定 → 路由到绑定静态存储 */
 int SCL_VarSet(const char *name, const char *val)
 {
+#if (SCL_CFG_MINI_EN != 0u)
+    int bi = Scl_BindFind(name);
+    if (bi >= 0)
+    {
+        return Scl_BindSet(bi, s_binds[bi].type, (val == NULL) ? "" : val);
+    }
+#endif
     if (val == NULL) { val = ""; }
     return Scl_VarSetCore(name, Scl_InferType(val), val);
 }
 
-/* 显式类型设置（v0.2；'var' 脚本路径） */
+/* 显式类型设置（v0.2；'var' 脚本路径）。命中 mini 绑定 → 路由 */
 int SCL_VarSetT(const char *name, uint8_t type, const char *val)
 {
+#if (SCL_CFG_MINI_EN != 0u)
+    int bi = Scl_BindFind(name);
+    if (bi >= 0)
+    {
+        return Scl_BindSet(bi, type, (val == NULL) ? "" : val);
+    }
+#endif
     return Scl_VarSetCore(name, type, val);
 }
 
 /* 显式类型建立只读常量（一经建立不可覆盖/释放，生命周期同会话变量） */
 int SCL_VarSetConst(const char *name, uint8_t type, const char *val)
 {
+#if (SCL_CFG_MINI_EN != 0u)
+    /* mini 只读绑定变量由生成的 set() 拒绝写入（返回 -5）；这里不覆盖绑定 */
+    if (Scl_BindFind(name) >= 0)
+    {
+        return -5;
+    }
+#endif
     return Scl_VarSetCoreEx(name, type, val, 1u);
 }
 
@@ -304,12 +414,23 @@ int SCL_VarIsConst(const char *name)
 
 uint8_t SCL_VarType(const char *name)
 {
+#if (SCL_CFG_MINI_EN != 0u)
+    int bi = Scl_BindFind(name);
+    if (bi >= 0) { return s_binds[bi].type; }
+#endif
     scl_var_t *e = Scl_VarFindAny(name);
     return (e == NULL) ? 0u : e->type;
 }
 
 const char *SCL_VarGet(const char *name)
 {
+#if (SCL_CFG_MINI_EN != 0u)
+    int bi = Scl_BindFind(name);
+    if (bi >= 0)
+    {
+        return s_binds[bi].get();   /* 未定义返回 NULL（同"不存在"） */
+    }
+#endif
     scl_var_t *e = Scl_VarFindAny(name);
     return (e == NULL) ? NULL : e->value;
 }

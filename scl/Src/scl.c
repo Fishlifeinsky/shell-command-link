@@ -883,6 +883,106 @@ int SCL_ArgType(int idx)
     return (int)s_argt[idx];
 }
 
+/* ============================ 命令编程式调用（mini / 宿主直调） ============================ */
+
+static scl_cmd_t *Scl_CmdFindName(const char *name, uint16_t len);   /* 定义见下 */
+#if (SCL_CFG_CMDDESC_EN != 0u)
+static int Scl_DescCheck(const scl_cmd_t *nd, int argc);             /* 定义见后 */
+#endif
+
+uint8_t SCL_CmdInvoke(const char *name, int argc, const scl_invoke_arg_t *argv)
+{
+    scl_cmd_t *nd;
+    uint16_t nl;
+    int ai;
+
+    if (name == NULL)
+    {
+        return 0u;
+    }
+    nl = Scl_StrLen(name);
+    if (nl == 0u)
+    {
+        return 0u;
+    }
+    if (argc < 0)
+    {
+        return 0u;
+    }
+    if (argc > (int)SCL_CFG_ARG_MAX)
+    {
+        Scl_MsgErr("命令 '%s': 参数过多(>%d)", name, (int)SCL_CFG_ARG_MAX);
+        return 0u;
+    }
+    if ((argc > 0) && (argv == NULL))
+    {
+        return 0u;
+    }
+
+    nd = Scl_CmdFindName(name, nl);
+    if (nd == NULL)
+    {
+        Scl_MsgErr("未知命令 '%s'", name);
+        return 0u;
+    }
+
+    /* 拷入工作缓冲并记录各参数类型（同解释器 Scl_ArgRestore 后的状态） */
+    for (ai = 0; ai < argc; ai++)
+    {
+        const char *tx = argv[ai].text;
+        uint16_t len;
+        uint16_t k;
+        if (tx == NULL) { tx = ""; }
+        len = Scl_StrLen(tx);
+        if (len >= SCL_CFG_ARG_LEN_MAX)
+        {
+            len = (uint16_t)(SCL_CFG_ARG_LEN_MAX - 1u);
+        }
+        for (k = 0u; k < len; k++) { s_argb[ai][k] = tx[k]; }
+        s_argb[ai][len] = '\0';
+        s_argt[ai] = (uint8_t)((argv[ai].type == 0u) ? SCL_T_STR : argv[ai].type);
+        s_argv[ai] = s_argb[ai];
+    }
+
+#if (SCL_CFG_CMDDESC_EN != 0u)
+    if (Scl_DescCheck(nd, argc) != 0)
+    {
+        return 0u;   /* 模板校验拒绝（已打印 usage/错误） */
+    }
+#endif
+    if (nd->sync != NULL)
+    {
+        s_wait_cmd = nd;   /* 异步：登记等待再发起（同解释器） */
+    }
+    nd->fn(argc, s_argv);
+    return (nd->sync != NULL) ? 2u : 1u;
+}
+
+uint8_t SCL_AsyncBusy(void)
+{
+    return (s_wait_cmd != NULL) ? 1u : 0u;
+}
+
+int SCL_AsyncPoll(void)
+{
+    if (s_wait_cmd == NULL)
+    {
+        return -1;
+    }
+    if (s_wait_cmd->sync != NULL)
+    {
+        if (s_wait_cmd->sync(false))
+        {
+            s_wait_cmd->sync(true);
+            s_wait_cmd = NULL;
+            return 1;
+        }
+        return 0;
+    }
+    s_wait_cmd = NULL;
+    return 1;
+}
+
 static scl_cmd_t *Scl_CmdFindName(const char *name, uint16_t len)
 {
     scl_cmd_t *node;

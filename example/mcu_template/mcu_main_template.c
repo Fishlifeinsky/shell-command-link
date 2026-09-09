@@ -9,10 +9,9 @@
   *             {
   *                 HAL_Init(); SystemClock_Config(); MX_GPIO_Init(); MX_USARTx_UART_Init();
   *                 App_Scl_Init();              // <-- SCL 相关初始化（本文件）
-  *                 Scl_Stm32_UartStartRx();     // <-- 串口中断接收（见 scl_stm32_port.c）
   *                 while (1)
   *                 {
-  *                     App_Scl_Poll();          // <-- SCL_Loop + Shell 提示
+  *                     App_Scl_Poll();          // <-- SCL_Loop 推进脚本
   *                     App_Scl_Tick1s();        // <-- 例：周期性把改动后的 env 固化
   *                     /* ...你的其它周期任务... */
   *                 }
@@ -23,7 +22,6 @@
   */
 
 #include "scl_stm32_port.h"     /* 内含 scl.h 与 SCL_MCU_HUART 等 */
-#include "scl_shell.h"          /* 交互 Shell（可裁剪） */
 
 /* ==================== 例：env 默认配置表（放 Flash 只读） ==================== */
 static const scl_env_def_t s_env_defs[] = {
@@ -63,10 +61,7 @@ void App_Scl_Init(void)
         }
     }
 
-    /* 3) 交互 Shell（可裁剪；不需要交互可整段去掉） */
-    Scl_Shell_Init(SCL_Port_PutChar);    /* 提示符输出走同一个 PutChar */
-
-    /* 4) 上电自检：跑固定 const 程序（省 RAM；也可 SCL_Run 文本） */
+    /* 3) 上电自检：跑固定 const 程序（省 RAM；也可 SCL_Run 文本） */
     if (SCL_RunProg(&scl_boot_prog) == 0u)
     {
         /* 程序非法/忙中：串口输出错误（PutChar 已在库内打消息） */
@@ -78,7 +73,6 @@ void App_Scl_Init(void)
 void App_Scl_Poll(void)
 {
     SCL_Loop();            /* 推进脚本（含异步命令轮询） */
-    Scl_Shell_Poll();      /* 命令完成后打印提示符（无 Shell 则空实现） */
 }
 
 /* ==================== 周期任务：固化改动后的 env ==================== */

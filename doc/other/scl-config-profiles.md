@@ -37,14 +37,13 @@ SCL 所有占用/能力宏集中在 `scl_cfg.h`（均 `#ifndef` 保护），
 RAM 大致：仅变量表 + 运行工作缓冲（约几百 B），bc/参数/label/中间表全在 Flash/裁掉。
 工具：`python tools/scl_emit_c.py boot.s2c -o boot_prog.c`（见 doc/arc/scl-const-prog.md）。
 
-### 档 B：平衡 —— 少量动态脚本 + 交互 shell（MCU 常见）
+### 档 B：平衡 —— 少量动态脚本（MCU 常见）
 ```bash
 -DSCL_CFG_RUN_TEXT_EN=1 -DSCL_CFG_RUN_PROG_EN=1
 -DSCL_CFG_SCRIPT_MAX=256 -DSCL_CFG_BC_MAX=256 -DSCL_CFG_ARG_CACHE_MAX=128
 -DSCL_CFG_LABEL_MAX=8 -DSCL_CFG_VAR_MAX=4
 -DSCL_CFG_ARG_MAX=6 -DSCL_CFG_ARG_LEN_MAX=24
 ```
-（可再开 `SCL_EX_SHELL_EN` 用 example/scl_shell 做串口 REPL。）
 
 ### 档 C：全功能 —— PC / 调试 / 演示（本仓库默认与测试）
 ```bash
@@ -71,4 +70,4 @@ RAM 大致：仅变量表 + 运行工作缓冲（约几百 B），bc/参数/labe
 ## 4. 其它裁剪
 
 - `SCL_CFG_MSG_EN=0`：库内全部提示整段裁掉，连 `SCL_Port_PutChar` 都可省略。
-- 例程层开关：`SCL_EX_CMDS_EN`(demo 命令)、`SCL_EX_SHELL_EN`(交互 shell) 置 0 裁掉。
+- 例程层开关：`SCL_EX_CMDS_EN`(demo 命令) 置 0 裁掉。

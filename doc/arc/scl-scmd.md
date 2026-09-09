@@ -1,7 +1,7 @@
 # SCL v0.3c：脚本命令（s2c 编译产物注册成命令，命令行直接调）
 
 > 类别：架构/使用 · 状态：已实现 · 文件：`tools/scl_script2chain.py`、`tools/scl_emit_c.py`、
-> `scl/Src/scl.c`、`example/scl_shell.c`、`example/s2c/demo_focus.s2c`
+> `scl/Src/scl.c`、`example/s2c/demo_focus.s2c`
 
 ## 1. 是什么
 
