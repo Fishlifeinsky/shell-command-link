@@ -1,23 +1,25 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-scl_mini_c.py —— mini-scl：把指令链/现代语法脚本编译成自包含 switch 状态机 C
+scl_mini_c.py —— mini-scl：把脚本/指令链编译成"类型化 C 状态机"（v2）
 
-与 scl_emit_c.py（const 字节码 + 解释器 SCL_RunProg）不同，mini 直接产出
-"switch 状态机 C"：
-  - 脚本 var → 生成的 .c 内 static 文本缓冲（+def 标志）；用户可见变量每次写入
-    同时 SCL_VarSetT 镜像，外部仍可用 SCL_VarGet 读取（观感与解释器一致）。
-  - 每条链指令 → step() 的 switch 一个 case；每次调用只执行一个动作（非阻塞）。
-  - label/jump/jump -a → 状态跳转；jump -a 用库 SCL_Ret_Get（命令副作用置位）。
-  - 业务命令调用 → SCL_CmdInvoke()（按名调用，desc 校验同解释器）；异步命令返回 2
-    → step 自持等待态，用 SCL_AsyncPoll 轮询到完成再前进。
-  - 运行时不再需要：文本编译器 / 字节码解释器 / label 表 / ${} 展开表
-    （mini 自带 Mini_Exp 处理 ${}：脚本 var 优先，否则 SCL_VarGet 兜底含 env）。
+设计目标（小型化）：
+  - 脚本变量 = 生成 .c 里的**类型化 static**（int32_t / bool / flag / 字符串缓冲），
+    不是文本会话变量、不镜像到会话槽。
+  - 运算符直接用 C：算术/比较/逻辑在 case 里就是 m_a + m_b、m_i < 3、m_b && m_c，
+    不再走文本解析/格式化。
+  - 每个变量生成 getter/setter，经 SCL_VarBind() 注册进 SCL 的绑定路由：
+    外部 C 用 SCL_VarGet/SCL_VarSet(T) 时命中绑定 → 落到这些 static（不占会话槽、
+    无生命周期管理，因此不需要 free）。内部临时变量（__ 前缀）不注册。
+  - 生成 `<name>_mini_register()`：注册命令 + 绑定变量；
+        `<name>_mini_start()` / `_step()`（非阻塞）/ `_busy()`。
+    命令注册后外部（或薄分发）可直接按名触发该 s2c 运行。
+  - 通用小助手只在用到时生成极少量；需要 SCL_CFG_MINI_EN=1 编译（绑定路由在库内）。
 
 用法：
-  python tools/scl_mini_c.py boot.s2c -o boot_mini.c [--name boot]
+  python tools/scl_mini_c.py boot.s2c -o boot_mini.c [--name boot] [--cmd boot]
   python tools/scl_mini_c.py --chain boot.chain -o boot_mini.c
-  # 也可由 scl_emit_c.py --mini 调用（同一 emit_mini_c）
+  # 也可 scl_emit_c.py --mini 调同一入口
 """
 import argparse
 import os
@@ -26,7 +28,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from scl_script2chain import translate, S2CError  # noqa: E402
 
-# ---------- 与 scl_emit_c.py 一致的字面量/链原语 ----------
+# ---------- 与 scl_emit_c.py 一致的字面量/类型 ----------
 T_BOOL = 0x01
 T_INT = 0x02
 T_FLAG = 0x03
@@ -39,29 +41,37 @@ OPWORDS = [
     ("iand", 0x20), ("ior", 0x21), ("ixor", 0x22), ("inot", 0x23), ("shl", 0x24), ("shr", 0x25),
     ("seq", 0x26), ("sneq", 0x27),
 ]
+INT_BIN = {"iadd", "isub", "imul", "idiv", "imod", "iand", "ior", "ixor", "shl", "shr"}
+INT_UN = {"ineg", "inot"}
+CMP = {"ieq", "ine", "igt", "ige", "ilt", "ile"}
+BOOL2 = {"band", "bor"}
+BOOL1 = {"bnot", "btest"}
+STRCMP = {"seq", "sneq"}
+
+_TYPEC = {"int": "SCL_T_INT", "bool": "SCL_T_BOOL",
+          "flag": "SCL_T_FLAG", "string": "SCL_T_STR"}
 
 
 class MiniError(Exception):
-    """mini 生成错误。"""
+    pass
 
 
 def _is_sp(c):
     return c in " \t\r\n"
 
 
-def _is_ascii_digit(c):
+def _is_digit(c):
     return "0" <= c <= "9"
 
 
 def _parse_i32(s):
-    """十进制/0x/0b → int32 或 None（与解释器一致）。"""
     if not s:
         return None
     if len(s) > 2 and s[0] == "0" and s[1] in "xXbB":
         base = 16 if s[1] in "xX" else 2
         v = 0
         for ch in s[2:]:
-            if _is_ascii_digit(ch):
+            if _is_digit(ch):
                 d = ord(ch) - 48
             elif "a" <= ch <= "f":
                 d = ord(ch) - 87
@@ -87,7 +97,7 @@ def _parse_i32(s):
     v = 0
     lim = 2147483648 if neg else 2147483647
     for ch in s[i:]:
-        if not _is_ascii_digit(ch):
+        if not _is_digit(ch):
             return None
         d = ord(ch) - 48
         if v > (lim - d) // 10:
@@ -96,24 +106,49 @@ def _parse_i32(s):
     return (-v) if neg else v
 
 
-def _lit_payload(tok):
-    """token → (type, payload)；裸 token 类型化同解释器。"""
+def _lit_type(tok):
+    """token 字面量类型：'int'/'bool'/'flag'/'str'/'num'？返回 None 表示是引用。"""
     if len(tok) == 2 and tok[0] == "-" and ("a" <= tok[1] <= "z" or "A" <= tok[1] <= "Z"):
-        return (T_FLAG, bytes([ord(tok[1])]))
+        return "flag"
     low = tok.lower()
-    if low == "true":
-        return (T_BOOL, bytes([1]))
-    if low == "false":
-        return (T_BOOL, bytes([0]))
-    iv = _parse_i32(tok)
-    if iv is not None:
-        u = iv & 0xFFFFFFFF
-        return (T_INT, bytes([(u >> 24) & 0xFF, (u >> 16) & 0xFF, (u >> 8) & 0xFF, u & 0xFF]))
-    return (T_STR, tok.encode("utf-8"))
+    if low == "true" or low == "false":
+        return "bool"
+    if _parse_i32(tok) is not None:
+        return "int"
+    return "str"
+
+
+def _lit_val(tok):
+    """字面量的 C 值/文本描述。"""
+    ty = _lit_type(tok)
+    if ty == "int":
+        return ("int", str(_parse_i32(tok)))
+    if ty == "bool":
+        return ("bool", "1" if tok.lower() == "true" else "0")
+    if ty == "flag":
+        return ("flag", tok)
+    return ("str", tok)
+
+
+def _cstr(s):
+    out = []
+    for ch in s:
+        if ch == "\\":
+            out.append("\\\\")
+        elif ch == '"':
+            out.append('\\"')
+        elif ch == "\r":
+            out.append("\\r")
+        elif ch == "\n":
+            out.append("\\n")
+        elif ch == "\t":
+            out.append("\\t")
+        else:
+            out.append(ch)
+    return '"%s"' % "".join(out)
 
 
 def _clauses(chain):
-    """链文本 → 子句原文（引号内 ';' 不分割）。"""
     out = []
     n = len(chain)
     p = 0
@@ -142,7 +177,6 @@ def _clauses(chain):
 
 
 def _split_head(clause):
-    """→ (head, head_end_index, 参数原文)；'#' 注释返回 (None,None,None)。"""
     n = len(clause)
     he = 0
     while he < n and not _is_sp(clause[he]):
@@ -156,33 +190,6 @@ def _split_head(clause):
     while re > rs and _is_sp(clause[re - 1]):
         re -= 1
     return (clause[0:he], rs, clause[rs:re])
-
-
-# ---------- mini 解析 / 生成 ----------
-_INT_BIN = {"iadd", "isub", "imul", "idiv", "imod", "iand", "ior", "ixor", "shl", "shr"}
-_INT_UN = {"ineg", "inot"}
-_CMP = {"ieq", "ine", "igt", "ige", "ilt", "ile"}
-_BOOL2 = {"band", "bor"}
-_BOOL1 = {"bnot", "btest"}
-_STRCMP = {"seq", "sneq"}
-
-
-def _cstr(s):
-    out = []
-    for ch in s:
-        if ch == "\\":
-            out.append("\\\\")
-        elif ch == '"':
-            out.append('\\"')
-        elif ch == "\r":
-            out.append("\\r")
-        elif ch == "\n":
-            out.append("\\n")
-        elif ch == "\t":
-            out.append("\\t")
-        else:
-            out.append(ch)
-    return '"%s"' % "".join(out)
 
 
 def _toks(raw):
@@ -212,20 +219,6 @@ def _toks(raw):
     return out
 
 
-def _canon(tok):
-    ty, payload = _lit_payload(tok)
-    if ty == T_BOOL:
-        return (T_BOOL, "true" if payload[0] else "false")
-    if ty == T_INT:
-        v = (payload[0] << 24) | (payload[1] << 16) | (payload[2] << 8) | payload[3]
-        if v > 0x7FFFFFFF:
-            v -= 0x100000000
-        return (T_INT, str(v))
-    if ty == T_FLAG:
-        return (T_FLAG, "-" + chr(payload[0]))
-    return (T_STR, tok)
-
-
 def _parse_var_decl(raw):
     raw = raw.strip()
     if raw == "" or raw == "free":
@@ -247,6 +240,8 @@ def _parse_var_decl(raw):
     typ, nm = hd[0], hd[1]
     if typ not in ("bool", "int", "flag", "string"):
         raise MiniError("var 类型不合法: %r" % typ)
+    if not (nm and (nm[0] == "_" or ("a" <= nm[0] <= "z") or ("A" <= nm[0] <= "Z"))):
+        raise MiniError("var 名不合法: %r" % nm)
     return (isc, nm, typ, val)
 
 
@@ -259,10 +254,8 @@ def _mini_insts(chain):
             continue
         if head == "label":
             nm = raw.strip()
-            if not nm:
-                raise MiniError("label: 名不合法")
-            if nm in labels:
-                raise MiniError("label 重名: %s" % nm)
+            if not nm or nm in labels:
+                raise MiniError("label 名不合法/重名: %r" % nm)
             labels[nm] = len(insts)
             continue
         if head == "jump":
@@ -279,18 +272,12 @@ def _mini_insts(chain):
             continue
         if head == "callf":
             tgt = raw.strip()
-            if not tgt:
-                raise MiniError("callf: 缺少目标 label")
             insts.append({"kind": "callf", "tgt": tgt})
             continue
         if head == "retf":
             insts.append({"kind": "retf"})
             continue
-        opw = None
-        for (w, _o) in OPWORDS:
-            if head == w:
-                opw = w
-                break
+        opw = next((w for (w, _o) in OPWORDS if head == w), None)
         if opw is not None:
             insts.append({"kind": "op", "op": opw, "toks": _toks(raw)})
             continue
@@ -310,57 +297,178 @@ def _mini_insts(chain):
                           "const": isc, "val": val})
             continue
         if head == "free":
-            nm = raw.strip()
-            insts.append({"kind": "free1", "name": nm} if nm else {"kind": "freeall"})
-            continue
+            continue            # mini 变量为 static，无生命周期 → free 是空操作
         if head in ("help", "cache"):
             raise MiniError("mini: meta '%s' 在自包含模式不支持" % head)
         if not (0 < len(head) < 256):
             raise MiniError("命令名不合法: %r" % head)
-        insts.append({"kind": "call", "name": head,
-                      "args": [_canon(t) for t in _toks(raw)]})
+        insts.append({"kind": "call", "name": head, "toks": _toks(raw)})
     return insts, labels
 
 
-def emit_mini_c(name, chain, source_note):
+# ---------------- C 发射 ----------------
+
+def _var_cname(nm):
+    return "m_" + nm
+
+
+def _var_getter(nm):
+    return "m_%s_get" % nm
+
+
+def _op_num_expr(tok, sym):
+    """数值上下文的 C 表达式：脚本 int 变量→原生；字面量→常量；其它→运行时解析。
+       返回 (code_lines, expr) —— code_lines 用于额外局部语句（一般为空）。"""
+    s = sym.get(tok)
+    if s is not None:
+        if s["type"] == "int":
+            return ([], _var_cname(tok))
+        # 非 int 脚本变量出现在数值上下文（类型不匹配，尽量兼容）：取其文本再解析
+        return ([], "SCL_ParseInt(%s(), 0)" % _var_getter(tok))
+    ty = _lit_type(tok)
+    if ty == "int":
+        return ([], "(%s)" % str(_parse_i32(tok)))
+    if ty == "bool":
+        return ([], "1" if tok.lower() == "true" else "0")
+    if ty == "flag":
+        raise MiniError("flag 出现在数值上下文: %r" % tok)
+    # 引用外部（${name} 或裸名，如 env 'baud'）：SCL_VarGet 读文本再解析
+    return ([], "SCL_ParseInt(Mini_ExtS(%s), 0)" % _cstr(tok if _ext_name(tok) is None else _ext_name(tok)))
+
+
+def _ext_name(tok):
+    """取 ${name} 的 name；裸名原样。非引用返回 None。"""
+    if tok.startswith("${") and tok.endswith("}"):
+        n = tok[2:-1]
+        return n
+    return None
+
+
+def _op_truth_expr(tok, sym, extra):
+    """真值上下文的 C 表达式（原生 typed；外部文本用 Mini_TruthS）。"""
+    s = sym.get(tok)
+    if s is not None:
+        t = s["type"]
+        if t == "bool":
+            return "(%s != 0u)" % _var_cname(tok)
+        if t == "int":
+            return "(%s != 0)" % _var_cname(tok)
+        if t == "flag":
+            return "1"            # flag 已定义即为真（无生命周期）
+        return "(%s[0] != '\\0')" % _var_cname(tok)
+    ty = _lit_type(tok)
+    if ty == "bool":
+        return "1" if tok.lower() == "true" else "0"
+    if ty == "int":
+        return "(%s != 0)" % str(_parse_i32(tok))
+    if ty == "flag":
+        return "1"
+    # ${name} 或裸名/裸文本 → 一律当外部变量读（解释器 TruthText 先查变量再按字面）
+    return "Mini_TruthS(Mini_ExtS(%s))" % _cstr(tok if _ext_name(tok) is None else _ext_name(tok))
+
+
+def _op_text_expr(tok, sym, extra):
+    """文本上下文的 C 表达式（指针，可经 getter/字面量/外部）。"""
+    s = sym.get(tok)
+    if s is not None:
+        return _var_getter(tok) + "()"
+    nm = _ext_name(tok)
+    if nm is not None:
+        return "Mini_ExtS(%s)" % _cstr(nm)
+    return _cstr(tok)
+
+
+def _build_arg_text(tok, sym):
+    """命令参数 token → (pre_lines, text_expr, type_c)。处理 ${} 内部脚本变量引用。
+       注意：裸变量名参数按字面量（解释器不展开裸名）；只有 ${name} 才取变量文本。"""
+    nm = _ext_name(tok)
+    ty = _lit_type(tok)
+    if nm is None and ty != "str":
+        return ([], _cstr(tok), {"int": "SCL_T_INT", "bool": "SCL_T_BOOL",
+                                  "flag": "SCL_T_FLAG"}[ty])
+    if "${" not in tok:
+        return ([], _cstr(tok), "SCL_T_STR")
+    # 含 ${...}：编译期拆片；脚本变量用其 getter，否则外部 Mini_ExtS
+    pre = []
+    b = _build_arg_exp(tok, sym, pre)
+    return (pre, b, "SCL_T_STR")
+
+
+_ARGCTR = [0]
+
+
+def _build_arg_exp(tok, sym, out_lines):
+    """把含 ${} 的 token 拆成拼接语句；返回 (text_expr)。分配 bx 名字。"""
+    _ARGCTR[0] += 1
+    k = _ARGCTR[0]
+    b = "bx%d" % k
+    z = "zx%d" % k
+    out_lines.append("    char %s[48]; unsigned %s = 0u;" % (b, z))
+    i = 0
+    n = len(tok)
+    while i < n:
+        if tok[i] == "$" and i + 1 < n and tok[i + 1] == "{":
+            j = tok.find("}", i + 2)
+            if j < 0:
+                raise MiniError("${ 未闭合")
+            name = tok[i + 2:j]
+            s = sym.get(name)
+            if s is not None:
+                out_lines.append("    Mini_AppendS(%s, &%s, sizeof(%s), %s());"
+                                 % (b, z, b, _var_getter(name)))
+            else:
+                out_lines.append("    Mini_AppendS(%s, &%s, sizeof(%s), Mini_ExtS(%s));"
+                                 % (b, z, b, _cstr(name)))
+            i = j + 1
+            continue
+        j = i
+        while j < n and not (tok[j] == "$" and j + 1 < n and tok[j + 1] == "{"):
+            j += 1
+        lit = tok[i:j]
+        if lit:
+            out_lines.append("    Mini_AppendS(%s, &%s, sizeof(%s), %s);"
+                             % (b, z, b, _cstr(lit)))
+        i = j
+    out_lines.append("    %s[%s < sizeof(%s) ? %s : sizeof(%s) - 1u] = '\\0';"
+                     % (b, z, b, z, b))
+    return b
+
+
+def emit_mini_c(name, chain, source_note, cmd_name=None):
     insts, labels = _mini_insts(chain)
     if not insts:
         raise MiniError("无指令")
     n = len(insts)
-
     for it in insts:
         if it["kind"] in ("jump", "jumpa", "callf"):
             if it["tgt"] not in labels:
                 raise MiniError("%s: label '%s' 未定义" % (it["kind"], it["tgt"]))
             it["st"] = labels[it["tgt"]]
 
+    # 符号表：脚本变量（内部 __ 前缀不绑定/不镜像）
     sym = {}
     for it in insts:
         if it["kind"] == "vardecl":
-            nm = it["name"]
-            internal = nm.startswith("__")
-            old = sym.get(nm)
+            old = sym.get(it["name"])
             if old is None or (it["const"] and not old["const"]):
-                sym[nm] = {"type": it["type"], "const": it["const"], "internal": internal}
+                sym[it["name"]] = {"type": it["type"], "const": it["const"]}
+    bind_vars = [nm for nm in sorted(sym) if not nm.startswith("__")]
 
+    _ARGCTR[0] = 0
     L = []
     L.append("/* ===============================================================")
-    L.append(" * SCL mini 自包含状态机程序：%s（由 tools/scl_mini_c.py / scl_emit_c.py --mini 生成，勿手改）" % name)
+    L.append(" * SCL mini v2 类型化状态机：%s（由 tools/scl_mini_c.py 生成，勿手改）" % name)
     L.append(" * 来源：%s" % source_note)
-    L.append(" * 用法：SCL_Init(); <注册所需命令>; %s_mini_start();" % name)
-    L.append(" *       然后周期调用 %s_mini_step()（每次一个动作，非阻塞）；返回 0 表示完成。" % name)
-    L.append(" * 特性：脚本变量为 static 文本缓冲；用户可见变量写入时 SCL_VarSetT 镜像，")
-    L.append(" *       外部可用 SCL_VarGet 读取（观感与解释器一致）。")
-    L.append(" * 裁剪：本文件自包含步进，不再需要文本编译器/字节码解释器/label 表。")
+    L.append(" * 用法：SCL_Init(); <注册所需命令>; %s_mini_register();" % name)
+    L.append(" *       %s_mini_start(); 然后周期调 %s_mini_step()（每次一动作，非阻塞）。" % (name, name))
+    L.append(" * 变量=类型化 static；SCL_VarBind 绑定 → 外部 SCL_VarGet/Set 路由到 static。")
+    L.append(" * 需 SCL_CFG_MINI_EN=1 编译（绑定路由在库内）。")
     L.append(" * ===============================================================")
     L.append(" */")
     L.append('#include "scl.h"')
     L.append("")
-    L.append("#define MINI_VLEN  16u          /* 变量文本缓冲（含 '\\0'） */")
-    L.append("#define MINI_VN    %du          /* 脚本变量个数 */" % len(sym))
-    L.append("#define MINI_NST   %du          /* 状态数（超界=完成） */" % n)
+    L.append("#define MINI_NST %du" % n)
     L.append("#define MINI_STEP_LIMIT 1000000u")
-    L.append("/* 静态助手可能在某个程序里用不到：抑制未用告警（GCC/Clang；其它编译器为空） */")
     L.append("#if defined(__GNUC__) || defined(__clang__)")
     L.append("#define MINI_UNUSED __attribute__((unused))")
     L.append("#else")
@@ -368,382 +476,242 @@ def emit_mini_c(name, chain, source_note):
     L.append("#endif")
     L.append("")
 
-    L.append("/* ---- 脚本变量（static；用户可见者写入即镜像到 SCL） ---- */")
-    L.append("typedef struct { const char *name; char *txt; uint8_t *def; uint8_t tag; } mini_vref_t;")
-    L.append("/* tag: bit0=const 只读；bit1=内部临时变量（不镜像） */")
+    # 需要用到的小助手（按需；多余的无害，MINI_UNUSED 抑制告警 + 编译器裁掉）
+    need = {"cp": False, "eq": False, "itoa": False,
+            "appends": False, "exts": False, "truths": False}
+    any_bool = False
+    any_strcmp = False
+    for it in insts:
+        if it["kind"] == "vardecl":
+            if it["type"] == "string":
+                need["cp"] = True
+        elif it["kind"] == "call":
+            for t in it["toks"]:
+                if "${" in t:
+                    need["appends"] = True
+                    if sym.get(_ext_name(t)) is None:
+                        need["exts"] = True
+        elif it["kind"] == "op":
+            op = it["op"]
+            if op in BOOL1 or op in BOOL2:
+                any_bool = True
+            if op in STRCMP:
+                any_strcmp = True
+            for t in it["toks"]:
+                if _ext_name(t) is not None:
+                    need["exts"] = True
+                elif sym.get(t) is None and _lit_type(t) not in ("int", "bool", "flag"):
+                    # 裸名可能是 env/绑定（如 iadd r baud r 的 baud）
+                    if op in (CMP | INT_BIN | INT_UN | BOOL2 | BOOL1):
+                        need["exts"] = True
+                    elif op in STRCMP:
+                        if _lit_type(t) != "str":
+                            need["exts"] = True
+    if any(sym[nm]["type"] == "int" for nm in sym):
+        need["itoa"] = True
+    if any(sym[nm]["type"] == "string" for nm in sym):
+        need["cp"] = True
+    if any_bool:
+        need["truths"] = True
+    if any_strcmp:
+        need["eq"] = True
+    if need["truths"]:
+        need["eq"] = True      # Mini_TruthS 用 Mini_Eq
+    if need["appends"]:
+        need["cp"] = True      # 供字符串变量缓冲写入用（保守保留；实际用 AppendS）
+    if need["eq"]:
+        L.append("static MINI_UNUSED int Mini_Eq(const char *a, const char *b)")
+        L.append("{ unsigned i = 0u;")
+        L.append("  for (; a[i] != '\\0' && b[i] != '\\0'; i++) { if (a[i] != b[i]) { return 0; } }")
+        L.append("  return (a[i] == b[i]) ? 1 : 0; }")
+        L.append("")
+    if need["cp"]:
+        L.append("static MINI_UNUSED void Mini_Cp(char *d, const char *s, unsigned cap)")
+        L.append("{ unsigned i = 0u; while (i + 1u < cap && s[i] != '\\0') { d[i] = s[i]; i++; }")
+        L.append("  if (cap) { d[i] = '\\0'; } }")
+        L.append("")
+    if need["itoa"]:
+        L.append("static MINI_UNUSED void Mini_Itoa(int32_t v, char *d, unsigned cap)")
+        L.append("{ char t[12]; unsigned k = 0u, off = 0u, i; uint32_t u;")
+        L.append("  if (v < 0) { off = 1u; u = (uint32_t)(-(v + 1)) + 1u; } else { u = (uint32_t)v; }")
+        L.append("  if (u == 0u) { t[k++] = '0'; }")
+        L.append("  while (u) { t[k++] = (char)('0' + (u % 10u)); u /= 10u; }")
+        L.append("  if (off && off < cap) { d[0] = '-'; }")
+        L.append("  for (i = 0u; i < k && off + i + 1u < cap; i++) { d[off + i] = t[k - 1u - i]; }")
+        L.append("  d[(off + (k < cap - off ? k : cap - 1u - off))] = '\\0'; }")
+        L.append("")
+    if need["appends"]:
+        L.append("static MINI_UNUSED void Mini_AppendS(char *d, unsigned *idx, unsigned cap, const char *s)")
+        L.append("{ while (*s && *idx + 1u < cap) { d[(*idx)++] = *s++; } }")
+        L.append("")
+    if need["exts"]:
+        L.append("static MINI_UNUSED const char *Mini_ExtS(const char *nm)")
+        L.append("{ const char *v = SCL_VarGet(nm); return (v != NULL) ? v : \"\"; }")
+        L.append("")
+    if need["truths"]:
+        L.append("static MINI_UNUSED int Mini_TruthS(const char *s)")
+        L.append("{ if (s[0] == '\\0') { return 0; }")
+        L.append("  if (Mini_Eq(s, \"false\")) { return 0; }")
+        L.append("  if (Mini_Eq(s, \"0\")) { return 0; }")
+        L.append("  return 1; }")
+        L.append("")
+
+    # 类型化变量 + getter/setter + 绑定表 + 命令注册
+    L.append("/* ---- 类型化变量（绑定路由到外部） ---- */")
     if sym:
-        for nm in sym:
-            L.append("static char m_%s[MINI_VLEN];" % nm)
-            L.append("static uint8_t m_%s_def;" % nm)
-        L.append("static mini_vref_t s_vs[MINI_VN] = {")
-        for nm in sym:
-            s = sym[nm]
-            tag = (1 if s["const"] else 0) | (2 if s["internal"] else 0)
-            L.append('    { %s, m_%s, &m_%s_def, 0x%02X },'
-                     % (_cstr(nm), nm, nm, tag))
-        L.append("};")
+        for nm in sorted(sym):
+            t = sym[nm]["type"]
+            c = _var_cname(nm)
+            g = _var_getter(nm)
+            if t == "int":
+                L.append("static int32_t %s;" % c)
+                L.append("static MINI_UNUSED const char *%s(void){ static char b[12]; Mini_Itoa(%s, b, sizeof b); return b; }"
+                         % (g, c))
+                L.append("static MINI_UNUSED int %s_set(const char *s){ %s = SCL_ParseInt((s != NULL) ? s : \"\", 0); return 0; }"
+                         % (nm, c))
+            elif t == "bool":
+                L.append("static uint8_t %s;" % c)
+                L.append("static MINI_UNUSED const char *%s(void){ return %s ? \"true\" : \"false\"; }" % (g, c))
+                L.append("static MINI_UNUSED int %s_set(const char *s){ if (s == NULL) return -3;" % nm)
+                L.append("  if (s[0] == 't' || s[0] == 'T' || s[0] == '1') { %s = 1u; }" % c)
+                L.append("  else if (s[0] == 'f' || s[0] == 'F' || s[0] == '0') { %s = 0u; }" % c)
+                L.append("  else { return -3; } return 0; }")
+            elif t == "flag":
+                L.append("static char %s;" % c)
+                L.append("static MINI_UNUSED const char *%s(void){ static char b[3]; b[0]='-'; b[1]=%s; b[2]='\\0'; return b; }" % (g, c))
+                L.append("static MINI_UNUSED int %s_set(const char *s){ if (s == NULL) return -3;" % nm)
+                L.append("  if (s[0] == '-' && s[1] != '\\0' && s[2] == '\\0') { %s = s[1]; return 0; }" % c)
+                L.append("  return -3; }")
+            else:  # string：缓冲 16B（同解释器值上限）
+                L.append("static char %s[16];" % c)
+                L.append("static MINI_UNUSED const char *%s(void){ return %s; }" % (g, c))
+                L.append("static MINI_UNUSED int %s_set(const char *s){ Mini_Cp(%s, (s != NULL) ? s : \"\", sizeof(%s)); return 0; }"
+                         % (nm, c, c))
     else:
-        L.append("static mini_vref_t s_vs[MINI_VN];")
+        L.append("/* 无脚本变量 */")
     L.append("")
 
+    # 绑定表
+    if bind_vars:
+        L.append("/* ---- 变量绑定：SCL_VarBind 路由（命中 SCL_VarGet/Set） ---- */")
+        L.append("static const scl_var_bind_t s_bind[] = {")
+        for nm in bind_vars:
+            s = sym[nm]
+            L.append('    { %s, %s, %s, %s },'
+                     % (_cstr(nm), _TYPEC[s["type"]], _var_getter(nm), "%s_set" % nm))
+        L.append("};")
+        L.append("")
+
+    # 状态
     L.append("/* ---- 运行状态 ---- */")
-    L.append("static uint16_t s_st;      /* 当前状态 */")
-    L.append("static uint32_t s_steps;   /* 已推进动作数（步限保护） */")
-    L.append("static uint8_t  s_wait;    /* 异步命令等待中 */")
-    L.append("static uint16_t s_pend;    /* 异步完成后进入的状态 */")
-    L.append("static uint8_t  s_fault;   /* 运行错误（如除零/写 const） */")
-    L.append("static uint16_t s_retst;   /* callf 返回点（单层子程序） */")
+    L.append("static uint16_t s_st;")
+    L.append("static uint32_t s_steps;")
+    L.append("static uint8_t  s_wait;")
+    L.append("static uint16_t s_pend;")
+    L.append("static uint8_t  s_fault;")
+    L.append("static uint16_t s_retst;")
     L.append("")
 
-    # ---------- 无 libc 运行时助手 ----------
-    L.append("/* ---- 无 libc 小助手 ---- */")
-    L.append("static MINI_UNUSED unsigned Mini_Len(const char *s)")
-    L.append("{")
-    L.append("    unsigned n = 0u;")
-    L.append("    while (s[n] != '\\0') { n++; }")
-    L.append("    return n;")
-    L.append("}")
-    L.append("")
-    L.append("static MINI_UNUSED uint8_t Mini_Eq(const char *a, const char *b)")
-    L.append("{")
-    L.append("    unsigned i;")
-    L.append("    for (i = 0u; a[i] != '\\0' && b[i] != '\\0'; i++)")
-    L.append("    {")
-    L.append("        if (a[i] != b[i]) { return 0u; }")
-    L.append("    }")
-    L.append("    return (a[i] == b[i]) ? 1u : 0u;")
-    L.append("}")
-    L.append("")
-    L.append("static MINI_UNUSED void Mini_Copy(char *dst, const char *src, unsigned cap)")
-    L.append("{")
-    L.append("    unsigned i = 0u;")
-    L.append("    while ((i + 1u < cap) && (src[i] != '\\0')) { dst[i] = src[i]; i++; }")
-    L.append("    dst[i] = '\\0';")
-    L.append("}")
-    L.append("")
-    L.append("static MINI_UNUSED int32_t Mini_Num(const char *s, int *ok)")
-    L.append("{")
-    L.append("    int32_t v = 0;")
-    L.append("    int neg = 0;")
-    L.append("    int base = 10;")
-    L.append("    int i = 0;")
-    L.append("    *ok = 1;")
-    L.append("    if (s == NULL) { *ok = 0; return 0; }")
-    L.append("    if (s[i] == '-') { neg = 1; i++; }")
-    L.append("    if (s[i] == '0' && (s[i + 1] == 'x' || s[i + 1] == 'X')) { base = 16; i += 2; }")
-    L.append("    else if (s[i] == '0' && (s[i + 1] == 'b' || s[i + 1] == 'B')) { base = 2; i += 2; }")
-    L.append("    if (s[i] == '\\0') { *ok = 0; return 0; }")
-    L.append("    while (s[i] != '\\0')")
-    L.append("    {")
-    L.append("        int d;")
-    L.append("        char c = s[i];")
-    L.append("        if (c >= '0' && c <= '9') { d = c - '0'; }")
-    L.append("        else if (c >= 'a' && c <= 'f') { d = c - 'a' + 10; }")
-    L.append("        else if (c >= 'A' && c <= 'F') { d = c - 'A' + 10; }")
-    L.append("        else { *ok = 0; return 0; }")
-    L.append("        if (d >= base) { *ok = 0; return 0; }")
-    L.append("        if (v > (0x7FFFFFFF - d) / base) { *ok = 0; return 0; }")
-    L.append("        v = v * base + d;")
-    L.append("        i++;")
-    L.append("    }")
-    L.append("    return neg ? -v : v;")
-    L.append("}")
-    L.append("")
-    L.append("static MINI_UNUSED void Mini_Fmt(int32_t val, char *dst, unsigned cap)")
-    L.append("{")
-    L.append("    char t[12];")
-    L.append("    unsigned k = 0u;")
-    L.append("    uint32_t u;")
-    L.append("    unsigned i;")
-    L.append("    unsigned off;")
-    L.append("    if (val < 0) { off = 1u; u = (uint32_t)(-(val + 1)) + 1u; }")
-    L.append("    else { off = 0u; u = (uint32_t)val; }")
-    L.append("    if (u == 0u) { t[k++] = '0'; }")
-    L.append("    while (u != 0u) { t[k++] = (char)('0' + (u % 10u)); u /= 10u; }")
-    L.append("    if (off != 0u && off < cap) { dst[0] = '-'; }")
-    L.append("    for (i = 0u; i < k && off + i + 1u < cap; i++)")
-    L.append("    {")
-    L.append("        dst[off + i] = t[k - 1u - i];")
-    L.append("    }")
-    L.append("    dst[(off + (k < cap - off ? k : cap - 1u - off))] = '\\0';")
-    L.append("}")
-    L.append("")
-    L.append("static MINI_UNUSED int Mini_VFind(const char *name)")
-    L.append("{")
-    L.append("    unsigned i;")
-    L.append("    for (i = 0u; i < MINI_VN; i++)")
-    L.append("    {")
-    L.append("        if (s_vs[i].name != NULL && Mini_Eq(s_vs[i].name, name)) { return (int)i; }")
-    L.append("    }")
-    L.append("    return -1;")
-    L.append("}")
-    L.append("")
-    L.append("static MINI_UNUSED int Mini_Set(const char *name, uint8_t type, const char *txt, uint8_t isconst)")
-    L.append("{")
-    L.append("    int i = Mini_VFind(name);")
-    L.append("    if (i < 0) { return -1; }")
-    L.append("    if ((s_vs[i].tag & 0x01u) != 0u && isconst == 0u) { return -1; }")
-    L.append("    Mini_Copy(s_vs[i].txt, txt, MINI_VLEN);")
-    L.append("    *s_vs[i].def = 1u;")
-    L.append("    if ((s_vs[i].tag & 0x02u) == 0u)")
-    L.append("    {")
-    L.append("        if (isconst != 0u) { (void)SCL_VarSetConst(name, type, txt); }")
-    L.append("        else { (void)SCL_VarSetT(name, type, txt); }")
-    L.append("    }")
-    L.append("    return 0;")
-    L.append("}")
-    L.append("")
-    L.append("static MINI_UNUSED void Mini_Free(const char *name)")
-    L.append("{")
-    L.append("    int i = Mini_VFind(name);")
-    L.append("    if (i < 0) { return; }")
-    L.append("    if ((s_vs[i].tag & 0x01u) != 0u) { return; }")
-    L.append("    s_vs[i].txt[0] = '\\0';")
-    L.append("    *s_vs[i].def = 0u;")
-    L.append("    if ((s_vs[i].tag & 0x02u) == 0u) { (void)SCL_VarFree(name); }")
-    L.append("}")
-    L.append("")
-    L.append("static MINI_UNUSED int32_t Mini_NumTok(const char *tok, int *ok)")
-    L.append("{")
-    L.append("    int i;")
-    L.append("    const char *v;")
-    L.append("    *ok = 1;")
-    L.append("    i = Mini_VFind(tok);")
-    L.append("    if (i >= 0)")
-    L.append("    {")
-    L.append("        if (*s_vs[i].def == 0u) { *ok = 0; return 0; }")
-    L.append("        return Mini_Num(s_vs[i].txt, ok);")
-    L.append("    }")
-    L.append("    if (Mini_Eq(tok, \"true\")) { return 1; }")
-    L.append("    if (Mini_Eq(tok, \"false\")) { return 0; }")
-    L.append("    if (tok[0] == '$' && tok[1] == '{')")
-    L.append("    {")
-    L.append("        const char *nm = tok + 2;")
-    L.append("        unsigned len = Mini_Len(nm);")
-    L.append("        char nb[24]; unsigned k;")
-    L.append("        if (len == 0u || nm[len - 1u] != '}') { *ok = 0; return 0; }")
-    L.append("        for (k = 0u; k + 1u < len && k + 1u < sizeof(nb); k++) { nb[k] = nm[k]; }")
-    L.append("        nb[k] = '\\0';")
-    L.append("        v = SCL_VarGet(nb);")
-    L.append("        if (v == NULL) { *ok = 0; return 0; }")
-    L.append("        if (Mini_Eq(v, \"true\")) { return 1; }")
-    L.append("        if (Mini_Eq(v, \"false\")) { return 0; }")
-    L.append("        return Mini_Num(v, ok);")
-    L.append("    }")
-    L.append("    v = SCL_VarGet(tok);")
-    L.append("    if (v != NULL)")
-    L.append("    {")
-    L.append("        if (Mini_Eq(v, \"true\")) { return 1; }")
-    L.append("        if (Mini_Eq(v, \"false\")) { return 0; }")
-    L.append("        return Mini_Num(v, ok);")
-    L.append("    }")
-    L.append("    return Mini_Num(tok, ok);")
-    L.append("}")
-    L.append("")
-    L.append("static MINI_UNUSED uint8_t Mini_TruthTok(const char *tok)")
-    L.append("{")
-    L.append("    int i = Mini_VFind(tok);")
-    L.append("    const char *v;")
-    L.append("    int ok;")
-    L.append("    if (i >= 0)")
-    L.append("    {")
-    L.append("        if (*s_vs[i].def == 0u) { return 0u; }")
-    L.append("        v = s_vs[i].txt;")
-    L.append("    }")
-    L.append("    else if (tok[0] == '$' && tok[1] == '{')")
-    L.append("    {")
-    L.append("        const char *nm = tok + 2;")
-    L.append("        unsigned len = Mini_Len(nm);")
-    L.append("        char nb[24]; unsigned k;")
-    L.append("        if (len == 0u || nm[len - 1u] != '}') { return 0u; }")
-    L.append("        for (k = 0u; k + 1u < len && k + 1u < sizeof(nb); k++) { nb[k] = nm[k]; }")
-    L.append("        nb[k] = '\\0';")
-    L.append("        v = SCL_VarGet(nb);")
-    L.append("        if (v == NULL) { return 0u; }")
-    L.append("    }")
-    L.append("    else")
-    L.append("    {")
-    L.append("        v = SCL_VarGet(tok);")
-    L.append("        if (v == NULL) { v = tok; }")
-    L.append("    }")
-    L.append("    if (Mini_Eq(v, \"true\")) { return 1u; }")
-    L.append("    if (Mini_Eq(v, \"false\")) { return 0u; }")
-    L.append("    ok = 0;")
-    L.append("    if (v[0] != '\\0' && Mini_Num(v, &ok) != 0 && ok) { return 1u; }")
-    L.append("    if (ok) { return 0u; }")
-    L.append("    if (v[0] == '\\0') { return 0u; }")
-    L.append("    if (Mini_Eq(v, \"0\")) { return 0u; }")
-    L.append("    return 1u;")
-    L.append("}")
-    L.append("")
-    L.append("static MINI_UNUSED const char *Mini_TokText(const char *tok)")
-    L.append("{")
-    L.append("    int i = Mini_VFind(tok);")
-    L.append("    const char *v;")
-    L.append("    if (i >= 0) { return (*s_vs[i].def != 0u) ? s_vs[i].txt : \"\"; }")
-    L.append("    if (tok[0] == '$' && tok[1] == '{')")
-    L.append("    {")
-    L.append("        const char *nm = tok + 2;")
-    L.append("        unsigned len = Mini_Len(nm);")
-    L.append("        static char nb[24]; unsigned k;")
-    L.append("        if (len == 0u || nm[len - 1u] != '}') { return \"\"; }")
-    L.append("        for (k = 0u; k + 1u < len && k + 1u < sizeof(nb); k++) { nb[k] = nm[k]; }")
-    L.append("        nb[k] = '\\0';")
-    L.append("        v = SCL_VarGet(nb);")
-    L.append("        return (v != NULL) ? v : \"\";")
-    L.append("    }")
-    L.append("    v = SCL_VarGet(tok);")
-    L.append("    return (v != NULL) ? v : tok;")
-    L.append("}")
-    L.append("")
-    L.append("static MINI_UNUSED void Mini_Exp(const char *tpl, char *dst, unsigned cap)")
-    L.append("{")
-    L.append("    unsigned di = 0u;")
-    L.append("    unsigned i = 0u;")
-    L.append("    while (tpl[i] != '\\0')")
-    L.append("    {")
-    L.append("        if (tpl[i] == '$' && tpl[i + 1] == '{')")
-    L.append("        {")
-    L.append("            unsigned s2 = i + 2u;")
-    L.append("            unsigned e2 = s2;")
-    L.append("            const char *val;")
-    L.append("            while (tpl[e2] != '\\0' && tpl[e2] != '}') { e2++; }")
-    L.append("            if (tpl[e2] == '}')")
-    L.append("            {")
-    L.append("                char nb[24];")
-    L.append("                unsigned k = 0u;")
-    L.append("                unsigned j;")
-    L.append("                while (s2 + k < e2 && k + 1u < sizeof(nb)) { nb[k] = tpl[s2 + k]; k++; }")
-    L.append("                nb[k] = '\\0';")
-    L.append("                j = (unsigned)Mini_VFind(nb);")
-    L.append("                val = (j < MINI_VN && *s_vs[j].def != 0u) ? s_vs[j].txt : SCL_VarGet(nb);")
-    L.append("                if (val != NULL)")
-    L.append("                {")
-    L.append("                    while (*val != '\\0' && di + 1u < cap) { dst[di++] = *val++; }")
-    L.append("                }")
-    L.append("                i = e2 + 1u;")
-    L.append("                continue;")
-    L.append("            }")
-    L.append("        }")
-    L.append("        if (di + 1u < cap) { dst[di++] = tpl[i]; }")
-    L.append("        i++;")
-    L.append("    }")
-    L.append("    if (di < cap) { dst[di] = '\\0'; }")
-    L.append("}")
-    L.append("")
-
-    # ---------- switch 状态机 ----------
-    L.append("/* ---- step：每次调用执行一个动作（非阻塞） ---- */")
     L.append("uint8_t %s_mini_step(void)" % name)
     L.append("{")
     L.append("    if (s_wait != 0u)")
-    L.append("    {")
-    L.append("        int p = SCL_AsyncPoll();")
-    L.append("        if (p == 0) { return 1u; }")
-    L.append("        s_wait = 0u;")
-    L.append("        s_st = s_pend;")
-    L.append("    }")
+    L.append("    { int p = SCL_AsyncPoll();")
+    L.append("      if (p == 0) { return 1u; }")
+    L.append("      s_wait = 0u; s_st = s_pend; }")
     L.append("    if (s_st >= MINI_NST) { return 0u; }")
     L.append("    if (s_steps++ >= MINI_STEP_LIMIT) { s_fault = 1u; goto mini_done; }")
     L.append("    switch (s_st)")
     L.append("    {")
     for idx, it in enumerate(insts):
-        for ln in _mini_case_c(idx, it):
+        for ln in _case(idx, it, sym):
             L.append("    " + ln)
-    L.append("    default:")
-    L.append("        s_st = MINI_NST;")
-    L.append("        break;")
+    L.append("    default: s_st = MINI_NST; break;")
     L.append("    }")
     L.append("mini_done:")
-    L.append("    if (s_fault != 0u)")
-    L.append("    {")
-    L.append("        s_fault = 0u;")
-    L.append("        s_st = MINI_NST;")
-    L.append("        return 0u;")
-    L.append("    }")
+    L.append("    if (s_fault != 0u) { s_fault = 0u; s_st = MINI_NST; return 0u; }")
     L.append("    return (s_st < MINI_NST) ? 1u : 0u;")
     L.append("}")
     L.append("")
+
     L.append("void %s_mini_start(void)" % name)
     L.append("{")
-    L.append("    SCL_Ret_Set(0);")
-    L.append("    s_st = 0u;")
-    L.append("    s_steps = 0u;")
-    L.append("    s_wait = 0u;")
-    L.append("    s_pend = 0u;")
-    L.append("    s_fault = 0u;")
-    L.append("    s_retst = 0u;")
+    L.append("    SCL_Ret_Set(0); s_st = 0u; s_steps = 0u;")
+    L.append("    s_wait = 0u; s_pend = 0u; s_fault = 0u; s_retst = 0u;")
     L.append("}")
-    L.append("")
     L.append("uint8_t %s_mini_busy(void)" % name)
+    L.append("{ return (s_st < MINI_NST) ? 1u : 0u; }")
+    L.append("")
+
+    # register：命令 + 变量绑定
+    L.append("/* ---- 注册：把 s2c 注册成命令 + 绑定变量到 SCL ---- */")
+    L.append("static void %s_mini_cmd(int argc, char *argv[])" % name)
+    L.append("{ (void)argc; (void)argv; %s_mini_start(); }" % name)
+    L.append("static scl_cmd_t s_%s_cmd = { %s, %s_mini_cmd, NULL, NULL, 0, NULL };" % (name, _cstr(cmd_name or name), name))
+    L.append("void %s_mini_register(void)" % name)
     L.append("{")
-    L.append("    return (s_st < MINI_NST) ? 1u : 0u;")
+    L.append("    SCL_RegisterCmd(&s_%s_cmd);" % name)
+    if bind_vars:
+        L.append("    (void)SCL_VarBind(s_bind, %d);" % len(bind_vars))
     L.append("}")
     L.append("")
     return "\n".join(L)
 
 
-def _mini_case_c(idx, it):
+def it_decl(nm, insts, sym):
+    for it in insts:
+        if it["kind"] == "vardecl" and it["name"] == nm:
+            return it
+    return None
+
+
+def _var_cap(decl, need):
+    """字符串变量缓冲容量（含 NUL）。"""
+    if decl is None:
+        return 16
+    v = decl["val"]
+    # 考虑 ${} 展开到最长引用值：给足 48 与字面量较长者
+    cap = len(v) + 1
+    # 让后续用于 echo 展开的最小余量
+    if "${" not in v:
+        cap = max(cap, 2)
+    if cap < 16:
+        cap = 16
+    if cap > 48:
+        cap = 48
+    return cap
+
+
+def _case(idx, it, sym):
     L = ["case %d:" % idx, "{"]
     k = it["kind"]
+    nxt = idx + 1
     if k == "vardecl":
-        tyc = {"bool": "SCL_T_BOOL", "int": "SCL_T_INT",
-               "flag": "SCL_T_FLAG", "string": "SCL_T_STR"}[it["type"]]
-        L.append('    if (Mini_Set(%s, %s, %s, %s) != 0) { s_fault = 1u; goto mini_done; }'
-                 % (_cstr(it["name"]), tyc, _cstr(it["val"]), "1u" if it["const"] else "0u"))
-        L.append("    s_st = %du;" % (idx + 1))
-    elif k == "freeall":
-        L.append("    { unsigned j;")
-        L.append("      for (j = 0u; j < MINI_VN; j++)")
-        L.append("      { if ((s_vs[j].tag & 0x01u) == 0u) { s_vs[j].txt[0] = '\\0'; *s_vs[j].def = 0u;")
-        L.append("        if ((s_vs[j].tag & 0x02u) == 0u) { (void)SCL_VarFree(s_vs[j].name); } } }")
-        L.append("    s_st = %du;" % (idx + 1))
-    elif k == "free1":
-        L.append("    Mini_Free(%s);" % _cstr(it["name"]))
-        L.append("    s_st = %du;" % (idx + 1))
+        t = it["type"]
+        nm = it["name"]
+        c = _var_cname(nm)
+        if t == "int":
+            L.append("    %s = %s;" % (c, it["val"]))
+        elif t == "bool":
+            L.append("    %s = %s;" % (c, "1u" if it["val"] == "true" else "0u"))
+        elif t == "flag":
+            L.append("    %s = %s;" % (c, _cstr(it["val"][1])))
+        else:
+            L.append("    Mini_Cp(%s, %s, sizeof(%s));" % (c, _cstr(it["val"]), c))
+        L.append("    s_st = %du;" % nxt)
     elif k == "jump":
         L.append("    s_st = %du;" % it["st"])
     elif k == "jumpa":
-        L.append("    if (SCL_Ret_Get() != 0)")
-        L.append("    { SCL_Ret_Set(0); s_st = %du; }" % it["st"])
-        L.append("    else")
-        L.append("    { SCL_Ret_Set(0); s_st = %du; }" % (idx + 1))
+        L.append("    if (SCL_Ret_Get() != 0) { SCL_Ret_Set(0); s_st = %du; }" % it["st"])
+        L.append("    else { SCL_Ret_Set(0); s_st = %du; }" % nxt)
     elif k == "callf":
-        L.append("    s_retst = %du;" % (idx + 1))
-        L.append("    s_st = %du;" % it["st"])
+        L.append("    s_retst = %du; s_st = %du;" % (nxt, it["st"]))
     elif k == "retf":
         L.append("    if (s_retst != 0u) { s_st = s_retst; s_retst = 0u; }")
         L.append("    else { s_st = MINI_NST; }")
     elif k == "op":
-        L.extend(_op_c(idx, it))
+        L.extend(_op(idx, it, sym))
     elif k == "call":
-        args = it["args"]
-        narg = len(args)
-        if narg > 0:
-            L.append("    const char *av[%d];" % narg)
-            L.append("    scl_invoke_arg_t ia[%d];" % narg)
-            bufi = 0
-            for ai, (ty, tx) in enumerate(args):
-                if ty == T_STR and "${" in tx:
-                    L.append("    char bx_%d[48];" % bufi)
-                    L.append("    Mini_Exp(%s, bx_%d, sizeof(bx_%d));" % (_cstr(tx), bufi, bufi))
-                    L.append("    av[%d] = bx_%d;" % (ai, bufi))
-                    bufi += 1
-                else:
-                    L.append("    av[%d] = %s;" % (ai, _cstr(tx)))
-                tn = {T_BOOL: "SCL_T_BOOL", T_INT: "SCL_T_INT",
-                      T_FLAG: "SCL_T_FLAG", T_STR: "SCL_T_STR"}[ty]
-                L.append("    ia[%d].text = av[%d];" % (ai, ai))
-                L.append("    ia[%d].type = %s;" % (ai, tn))
-            L.append("    {")
-            L.append("        uint8_t r = SCL_CmdInvoke(%s, %d, ia);" % (_cstr(it["name"]), narg))
-        else:
-            L.append("    {")
-            L.append("        uint8_t r = SCL_CmdInvoke(%s, 0, NULL);" % _cstr(it["name"]))
-        L.append("        if (r == 0u) { s_fault = 1u; goto mini_done; }")
-        L.append("        if (r == 2u) { s_wait = 1u; s_pend = %du; }" % (idx + 1))
-        L.append("        else { s_st = %du; }" % (idx + 1))
-        L.append("    }")
+        L.extend(_call(idx, it, sym))
     else:
         L.append("    s_fault = 1u; goto mini_done;")
     L.append("    break;")
@@ -751,100 +719,114 @@ def _mini_case_c(idx, it):
     return L
 
 
-def _op_c(idx, it):
+def _op(idx, it, sym):
+    """生成一条运算指令的 case 语句（不含 break；s_st 由本函数推进）。"""
     L = []
     op = it["op"]
     toks = it["toks"]
     nxt = idx + 1
-    def _num(tok, var):
-        L.append("        %s = Mini_NumTok(%s, &ok);" % (var, _cstr(tok)))
-        L.append("        if (!ok) { s_fault = 1u; goto mini_done; }")
-    if op in _INT_BIN:
-        L.append("    { int ok;")
+
+    if op in INT_BIN:
         if len(toks) < 3:
-            L.append("      s_fault = 1u; goto mini_done; }")
-        else:
-            a, b, dst = toks[0], toks[1], toks[2]
-            _num(a, "int32_t a")
-            _num(b, "int32_t b")
-            opc = {"iadd": "a + b", "isub": "a - b", "imul": "a * b",
-                   "iand": "a & b", "ior": "a | b", "ixor": "a ^ b",
-                   "shl": "(int32_t)((uint32_t)a << (b & 31))",
-                   "shr": "(int32_t)((uint32_t)a >> (b & 31))"}.get(op)
-            if opc is None:  # idiv / imod
-                L.append("        if (b == 0) { s_fault = 1u; goto mini_done; }")
-                opc = "a / b" if op == "idiv" else "a % b"
-            L.append("        char tb[MINI_VLEN];")
-            L.append("        Mini_Fmt(%s, tb, sizeof(tb));" % opc)
-            L.append('        if (Mini_Set(%s, SCL_T_INT, tb, 0u) != 0) { s_fault = 1u; goto mini_done; }'
-                     % _cstr(dst))
-            L.append("    }")
-        L.append("    s_st = %du;" % nxt)
-    elif op in _INT_UN:
-        L.append("    { int ok;")
+            raise MiniError("%s: 需要 3 参 (a b dst)" % op)
+        a, b, dst = toks
+        _p, ea = _op_num_expr(a, sym)
+        _p, eb = _op_num_expr(b, sym)
+        opr = {"iadd": "a + b", "isub": "a - b", "imul": "a * b",
+               "iand": "a & b", "ior": "a | b", "ixor": "a ^ b",
+               "shl": "(int32_t)((uint32_t)a << (b & 31))",
+               "shr": "(int32_t)((uint32_t)a >> (b & 31))"}.get(op)
+        L.append("{ int32_t a = %s; int32_t b = %s; int32_t r;" % (ea, eb))
+        if opr is None:
+            L.append("  if (b == 0) { s_fault = 1u; goto mini_done; }")
+            opr = "a / b" if op == "idiv" else "a % b"
+        L.append("  r = %s; %s = r; }" % (opr, _var_cname(dst)))
+    elif op in INT_UN:
         if len(toks) < 2:
-            L.append("      s_fault = 1u; goto mini_done; }")
-        else:
-            a, dst = toks[0], toks[1]
-            _num(a, "int32_t a")
-            L.append("        char tb[MINI_VLEN];")
-            L.append("        Mini_Fmt(%s, tb, sizeof(tb));" % ("-a" if op == "ineg" else "~a"))
-            L.append('        if (Mini_Set(%s, SCL_T_INT, tb, 0u) != 0) { s_fault = 1u; goto mini_done; }'
-                     % _cstr(dst))
-            L.append("    }")
-        L.append("    s_st = %du;" % nxt)
-    elif op in _CMP:
-        L.append("    { int ok;")
+            raise MiniError("%s: 需要 2 参 (a dst)" % op)
+        a, dst = toks
+        _p, ea = _op_num_expr(a, sym)
+        L.append("{ int32_t a = %s; %s = %s; }" % (ea, _var_cname(dst),
+                                                   "-a" if op == "ineg" else "~a"))
+    elif op in CMP:
         if len(toks) < 2:
-            L.append("      s_fault = 1u; goto mini_done; }")
-        else:
-            _num(toks[0], "int32_t a")
-            _num(toks[1], "int32_t b")
-            cond = {"ieq": "a == b", "ine": "a != b", "igt": "a > b",
-                    "ige": "a >= b", "ilt": "a < b", "ile": "a <= b"}[op]
-            L.append("        SCL_Ret_Set((%s) ? 1 : 0);" % cond)
-            L.append("    }")
-        L.append("    s_st = %du;" % nxt)
-    elif op in _BOOL2:
-        L.append("    {")
+            raise MiniError("%s: 需要 2 参 (a b)" % op)
+        a, b = toks
+        _p, ea = _op_num_expr(a, sym)
+        _p, eb = _op_num_expr(b, sym)
+        opr = {"ieq": "==", "ine": "!=", "igt": ">", "ige": ">=",
+               "ilt": "<", "ile": "<="}[op]
+        L.append("SCL_Ret_Set(((%s) %s (%s)) ? 1 : 0);" % (ea, opr, eb))
+    elif op in BOOL2:
         if len(toks) < 2:
-            L.append("      s_fault = 1u; goto mini_done; }")
+            raise MiniError("%s: 需要 2 参 (a b)" % op)
+        a, b = toks[:2]
+        ea = _op_truth_expr(a, sym, L)
+        eb = _op_truth_expr(b, sym, L)
+        if op == "band":
+            L.append("SCL_Ret_Set((%s) && (%s) ? 1 : 0);" % (ea, eb))
         else:
-            L.append("        uint8_t a = Mini_TruthTok(%s);" % _cstr(toks[0]))
-            L.append("        uint8_t b = Mini_TruthTok(%s);" % _cstr(toks[1]))
-            L.append("        SCL_Ret_Set((%s) ? 1 : 0);"
-                     % ("(a && b)" if op == "band" else "(a || b)"))
-            L.append("    }")
-        L.append("    s_st = %du;" % nxt)
-    elif op in _BOOL1:
-        L.append("    {")
+            L.append("SCL_Ret_Set((%s) || (%s) ? 1 : 0);" % (ea, eb))
+    elif op in BOOL1:
         if len(toks) < 1:
-            L.append("      s_fault = 1u; goto mini_done; }")
+            raise MiniError("%s: 需要 1 参 (a)" % op)
+        a = toks[0]
+        ea = _op_truth_expr(a, sym, L)
+        if op == "bnot":
+            L.append("SCL_Ret_Set((%s) ? 0 : 1);" % ea)
         else:
-            L.append("        uint8_t a = Mini_TruthTok(%s);" % _cstr(toks[0]))
-            L.append("        SCL_Ret_Set(%s);" % ("a ? 0 : 1" if op == "bnot" else "a ? 1 : 0"))
-            L.append("    }")
-        L.append("    s_st = %du;" % nxt)
-    elif op in _STRCMP:
-        L.append("    { int eq;")
+            L.append("SCL_Ret_Set((%s) ? 1 : 0);" % ea)
+    elif op in STRCMP:
         if len(toks) < 2:
-            L.append("      s_fault = 1u; goto mini_done; }")
-        else:
-            L.append("        eq = Mini_Eq(Mini_TokText(%s), Mini_TokText(%s)) ? 1 : 0;"
-                     % (_cstr(toks[0]), _cstr(toks[1])))
-            L.append("        SCL_Ret_Set(%s);" % ("eq" if op == "seq" else "eq ? 0 : 1"))
-            L.append("    }")
-        L.append("    s_st = %du;" % nxt)
+            raise MiniError("%s: 需要 2 参 (a b)" % op)
+        a, b = toks
+        ea = _op_text_expr(a, sym, L)
+        eb = _op_text_expr(b, sym, L)
+        L.append("SCL_Ret_Set(Mini_Eq(%s, %s) ? %s : %s);"
+                 % (ea, eb, "1" if op == "seq" else "0", "0" if op == "seq" else "1"))
     else:
-        L.append("    s_fault = 1u; goto mini_done;")
+        raise MiniError("mini: 不支持运算 %s" % op)
+
+    L.append("s_st = %du;" % nxt)
+    return L
+
+
+def _call(idx, it, sym):
+    """生成一次命令调用的 case 语句（不含 break；含 ${} 拆片到局部缓冲）。"""
+    L = []
+    nxt = idx + 1
+    toks = it["toks"]
+    narg = len(toks)
+    exprs = []
+    types = []
+    for t in toks:
+        pr, tx, ty = _build_arg_text(t, sym)
+        for ln in pr:
+            L.append(ln.strip("\n"))
+        exprs.append(tx)
+        types.append(ty)
+    if narg > 0:
+        L.append("const char *av[%d];" % narg)
+        L.append("scl_invoke_arg_t ia[%d];" % narg)
+        for i in range(narg):
+            L.append("av[%d] = %s;" % (i, exprs[i]))
+            L.append("ia[%d].text = av[%d];" % (i, i))
+            L.append("ia[%d].type = %s;" % (i, types[i]))
+        L.append("{ uint8_t r = SCL_CmdInvoke(%s, %d, ia);" % (_cstr(it["name"]), narg))
+    else:
+        L.append("{ uint8_t r = SCL_CmdInvoke(%s, 0, NULL);" % _cstr(it["name"]))
+    L.append("  if (r == 0u) { s_fault = 1u; goto mini_done; }")
+    L.append("  if (r == 2u) { s_wait = 1u; s_pend = %du; }" % nxt)
+    L.append("  else { s_st = %du; } }" % nxt)
     return L
 
 
 def main(argv=None):
-    ap = argparse.ArgumentParser(description="mini-scl：脚本/指令链 → switch 状态机 C")
-    ap.add_argument("input", help="输入 .s2c（现代语法）或指令链文本（--chain）")
+    ap = argparse.ArgumentParser(description="mini-scl v2：脚本/指令链 → 类型化 switch 状态机 C")
+    ap.add_argument("input")
     ap.add_argument("-o", "--output", default=None)
     ap.add_argument("--name", default=None)
+    ap.add_argument("--cmd", default=None, help="注册成命令行指令的名字（缺省=--name/文件名）")
     ap.add_argument("--chain", action="store_true")
     ap.add_argument("--ret-setter", default="setret")
     ap.add_argument("--var-max", type=int, default=4)
@@ -882,7 +864,7 @@ def main(argv=None):
         name = "".join(ch for ch in base.split(".")[0] if ch.isalnum() or ch == "_") or "prog"
 
     try:
-        text = emit_mini_c(name, chain, note)
+        text = emit_mini_c(name, chain, note, cmd_name=args.cmd)
     except MiniError as e:
         print("scl-mini: error: %s" % e, file=sys.stderr)
         return 1

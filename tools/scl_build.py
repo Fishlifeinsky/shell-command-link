@@ -121,7 +121,8 @@ def cmd_test(_a):
     print("\n== MCU main 骨架无板自检（mcu_template/mcu_boot_sim.c） ==")
     ok &= build_test("mcu_boot_sim", main=pathlib.Path("mcu_template") / "mcu_boot_sim.c")
     print("\n== mini-scl 自包含状态机自检（example/mini/boot_mini_sim.c） ==")
-    ok &= build_test("mini_boot_sim", main=pathlib.Path("mini") / "boot_mini_sim.c")
+    ok &= build_test("mini_boot_sim", ("-DSCL_CFG_MINI_EN=1",),
+                     main=pathlib.Path("mini") / "boot_mini_sim.c")
     print("\n== 转译器 s2c_test（精确比对 + 真实回喂 + emit-c） ==")
     r = sh([sys.executable, str(ROOT / "tools" / "s2c_test.py")])
     print(dec(r.stdout))
