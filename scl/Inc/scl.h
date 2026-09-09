@@ -517,6 +517,16 @@ uint8_t SCL_CmdInvoke(const char *name, int argc, const scl_invoke_arg_t *argv);
 uint8_t SCL_AsyncBusy(void);
 
 /**
+  * @brief  最简"解释器"：把一行文本解析成 argc/argv 后按名执行一条注册命令
+  * @param  line "命令 参数..."（空白分隔；含空格的参数用引号包裹）
+  * @retval 1=已同步执行完；2=已发起异步命令（周期 SCL_AsyncPoll 等待）；
+  *         0=空行/命令不存在/参数非法(已打印)/busy
+  * @note   mini 精简档不需要整链/字节码解释，本入口就是"收一行→执行→吐返回"。
+  *         无表达式/无 ${}/无变量，仅字面量参数（bool/int/flag/string 自动识别）。
+  */
+uint8_t SCL_RunLine(const char *line);
+
+/**
   * @brief  推进一次异步等待轮询
   * @retval 1=等待的命令已完成并清除（可继续下一步）；0=仍在进行；
   *         -1=当前无异步等待

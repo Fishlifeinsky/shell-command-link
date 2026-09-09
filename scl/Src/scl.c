@@ -1003,6 +1003,114 @@ int SCL_AsyncPoll(void)
     return 1;
 }
 
+/* ============ 最简"解释器"：一行 → 命令名 + argc/argv → 按名执行 ============ */
+
+uint8_t SCL_RunLine(const char *line)
+{
+    static char tb[SCL_CFG_ARG_BUF_BYTES];   /* token 文本区 */
+    static char nm[SCL_CMDNAME_MAX];
+    scl_invoke_arg_t ia[SCL_CFG_ARG_MAX];
+    int32_t iv;
+    uint16_t nml;
+    uint16_t tbi = 0u;
+    int argc = 0;
+    const char *p;
+
+    if (line == NULL)
+    {
+        return 0u;
+    }
+    if (SCL_AsyncBusy() != 0u)
+    {
+        Scl_MsgErr("busy: 上一条异步命令未完成");
+        return 0u;
+    }
+    p = line;
+    while (Scl_IsSp(*p)) { p++; }
+    if (*p == '\0') { return 0u; }
+
+    /* 命令名（首个空白前；不支持引号命令名） */
+    nml = 0u;
+    while ((p[nml] != '\0') && !Scl_IsSp(p[nml]) && (nml + 1u < (uint16_t)sizeof(nm)))
+    {
+        nml++;
+    }
+    if (nml == 0u)
+    {
+        return 0u;
+    }
+    if ((p[nml] != '\0') && !Scl_IsSp(p[nml]))
+    {
+        Scl_MsgErr("命令名过长");
+        return 0u;
+    }
+    {
+        uint16_t k;
+        for (k = 0u; k < nml; k++) { nm[k] = p[k]; }
+        nm[nml] = '\0';
+    }
+    if (Scl_CmdFindName(nm, nml) == NULL)
+    {
+        Scl_MsgErr("未知命令 '%s'", nm);
+        return 0u;
+    }
+    p += nml;
+
+    /* 参数：空白分隔；引号内可有空白（整段 STR，类型不识别） */
+    for (;;)
+    {
+        char q = 0;
+        uint16_t start;
+        uint16_t len;
+        uint8_t ty;
+        while (*p != '\0' && Scl_IsSp(*p)) { p++; }
+        if (*p == '\0') { break; }
+        if (argc >= (int)SCL_CFG_ARG_MAX)
+        {
+            Scl_MsgErr("参数过多(>%d)", (int)SCL_CFG_ARG_MAX);
+            return 0u;
+        }
+        start = tbi;
+        if ((*p == '"') || (*p == '\''))
+        {
+            q = *p;
+            p++;
+        }
+        while (*p != '\0')
+        {
+            if (q != 0)
+            {
+                if (*p == q) { p++; break; }
+            }
+            else if (Scl_IsSp(*p))
+            {
+                break;
+            }
+            if (tbi + 1u < (uint16_t)sizeof(tb)) { tb[tbi++] = *p; }
+            p++;
+        }
+        tb[tbi] = '\0';
+        len = (uint16_t)(tbi - start);
+        tbi++;   /* 越过 NUL，为下个 token 让位 */
+        ty = SCL_T_STR;
+        if ((q == 0) && (len == 4u) && Scl_EqIN(&tb[start], "true", 4u)) { ty = SCL_T_BOOL; }
+        else if ((q == 0) && (len == 5u) && Scl_EqIN(&tb[start], "false", 5u)) { ty = SCL_T_BOOL; }
+        else if ((q == 0) && (len == 2u) && (tb[start] == '-') && Scl_IsAl(tb[start + 1u]))
+        {
+            ty = SCL_T_FLAG;
+        }
+        else if ((q == 0) && (len > 0u) && (Scl_ParseI32Len(&tb[start], len, &iv) == 0))
+        {
+            ty = SCL_T_INT;
+        }
+        ia[argc].text = &tb[start];
+        ia[argc].type = ty;
+        argc++;
+    }
+
+    return SCL_CmdInvoke(nm, argc, (argc > 0) ? ia : NULL);
+}
+
 static scl_cmd_t *Scl_CmdFindName(const char *name, uint16_t len)
 {
     scl_cmd_t *node;
