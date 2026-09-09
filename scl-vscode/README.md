@@ -1,6 +1,6 @@
 # SCL Syntax Highlight（.s2c / .chain）
 
-为 [shell-command-link](..) 库的两种脚本提供 VS Code 语法高亮：
+为 shell-command-link 库的两种脚本提供 VS Code 语法高亮：
 
 | 语言 id | 扩展名 | 内容 |
 |---------|--------|------|
@@ -13,7 +13,8 @@
 
 - 注释（行/块）· 字符串（单/双引号，内含 `${var}` 上色）· 数字（含 `0x`/`0b`）
 - 关键字/控制字、类型 `bool/int/flag/string`、flag 字面量 `-x`
-- `s2c`：运算符与 `->`；`chain`：跳转模式 `-a/-b` 与全部内置运算指令
+- `s2c`：变量声明/引用、`alias name = target` 别名定义、函数定义与调用、函数参数、运算符与 `->`
+- `chain`：命令名、变量引用、跳转模式 `-a/-b` 与全部内置运算指令
 
 ## 安装 / 调试
 

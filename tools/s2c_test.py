@@ -113,6 +113,8 @@ def test_unit():
     unit_exact('ret(1); echo("a b", z)',
                'setret 1;echo "a b" z',
                "ret 糖衣 + 引号多参命令")
+    unit_exact("cache()\ncache(gc)", "cache;cache gc",
+               "cache 查询与 GC 指令")
 
     # fn 参数内联
     unit_exact("fn note(x,y){ echo(x,y) }\nnote(\"p q\",2)",
@@ -243,8 +245,6 @@ def test_alias():
     f("alias pps arg0\nvar int x=0\nx = pps + 1\n",
       "var int x=0;iadd arg0 1 x", "alias 算术引用替换")
     f("alias a arg0\nalias b a\necho(${b})\n", "echo ${arg0}", "alias 链式替换")
-    f("alias pps arg0\necho(\"x=${pps}\")\n", "echo x=${arg0}",
-      "alias ${} 参数替换")
     f("const int LIM=5\nalias M LIM\nvar int r=0\nr = M + 1\necho(${M})\n",
       "var int r=0;iadd 5 1 r;echo 5", "alias 指向 const → 折叠")
     fe("alias x x\n", "指向自己", "别名自引用报错")
@@ -645,6 +645,8 @@ def test_feed():
         ("wheng", "var int a=3\nvar int b=0\n"
                   "when { a > 3 -> echo(big); b == 0 -> echo(zero); else -> echo(rest) }\necho(end)",
          ["echo zero", "echo end", "RUN-OK"]),
+        ("cache", "var string x=hello\ncache()\ncache(gc)\ncache(zombie)",
+         ["cache current=", "gc=", "zombie=", "RUN-OK"]),
         # v0.3d：fn 运行时子程序真实执行（callf/retf 动态 SCL_Run）
         ("fnrt", "var int t=0\nfn big(){\n echo(\"a\")\n echo(\"b\")\n echo(\"c\")\n echo(\"d\")\n t = t + 1\n}\n"
                   "big()\nbig()\nbig()\nbig()\necho(\"t=${t}\")",

@@ -28,7 +28,7 @@
   *              主循环周期调 SCL_Loop() 逐条解释执行；命令可带"同步信号回调"
   *              （handler 启动异步操作后立即返回，库每 Loop 轮询 sync(false)，
   *              完成后再 sync(true) 清除并执行下一条）
-  *            - 全程静态内存、无 malloc；无 OS / HAL / libc 依赖
+  *            - 默认全程静态内存、无 malloc；可选动态模式使用应用 allocator
   *
   *          保留关键字（不能注册为业务命令）：var / free / help / label / jump
   *            以及内置运算指令 iadd/isub/imul/idiv/imod/ineg/ieq/ine/igt/ige/ilt/ile/
@@ -52,6 +52,19 @@ extern "C" {
 #include <stdint.h>
 #include <stdbool.h>
 #include <stddef.h>   /* NULL（正规来源；严格工具链如 arm-none-eabi 下 stdio 不保证提供） */
+
+/* 可选动态内存提供者；ctx 由应用持有，库不解释其内容。 */
+typedef void *(*scl_alloc_fn)(void *ctx, size_t size);
+typedef void *(*scl_realloc_fn)(void *ctx, void *ptr, size_t size);
+typedef void (*scl_free_fn)(void *ctx, void *ptr);
+
+typedef struct scl_allocator
+{
+  scl_alloc_fn   alloc;
+  scl_realloc_fn realloc;
+  scl_free_fn    free;
+  void          *ctx;
+} scl_allocator_t;
 
 /* ============================ 类型常量 ============================ */
 
@@ -152,6 +165,29 @@ uint8_t SCL_Scmd_RunText(const char *line);
   * @note   未显式调用时，首次 SCL_Run 前会自动初始化一次
   */
 void SCL_Init(void);
+
+/**
+  * @brief  使用应用提供的 allocator 初始化。
+  * @param  allocator 动态模式必填；静态模式可传 NULL
+  * @retval 1=成功；0=allocator 不完整或最小工作区分配失败
+  */
+uint8_t SCL_InitEx(const scl_allocator_t *allocator);
+
+/** 动态/静态缓存统计（动态模式统计 allocator 实际用量，静态模式统计配置容量） */
+typedef struct scl_cache_info
+{
+    size_t current;
+    size_t peak;
+    size_t capacity;
+    uint32_t alloc_count;
+    uint32_t free_count;
+    uint32_t gc_count;
+    uint32_t zombie_count;
+} scl_cache_info_t;
+
+uint8_t SCL_CacheInfo(scl_cache_info_t *info);
+uint8_t SCL_CacheGc(void);
+uint8_t SCL_CacheGcZombie(void);
 
 /**
   * @brief  提交一条指令链（脚本）开始执行

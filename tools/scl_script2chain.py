@@ -31,7 +31,7 @@ import argparse
 
 # ============================ 保留字 ============================
 
-RESERVED_CMD = {"if", "while", "var", "free", "help", "label", "jump"}  # 运行时/关键字
+RESERVED_CMD = {"if", "while", "var", "free", "help", "cache", "label", "jump"}  # 运行时/关键字
 SYNTAX_WORDS = {"else", "fn", "ret", "true", "false", "const",
                 "do", "when", "for", "alias"}   # 语法字
 
@@ -314,6 +314,11 @@ class Parser:
             if v not in ("0", "1"):
                 raise S2CError("ret 参数应为 1/0/true/false，实际 %r" % v, t.line, t.col)
             return ("ret_set", v)
+        if kw == "cache":
+            self.next()
+            self.expect(text="(", what="'('")
+            args = self.parse_args_after_open()
+            return ("call", kw, args)
         if kw in RESERVED_CMD or kw in SYNTAX_WORDS:
             raise S2CError("此处不允许使用关键字 %r" % kw, t.line, t.col)
 
@@ -475,7 +480,7 @@ class Parser:
         raise S2CError("赋值右值无法解析 %r" % t.text, t.line, t.col)
 
     def parse_alias(self):
-        """alias <name> <target>：编译期别名——之后对 name 的引用等价于 target。
+        """alias <name> [=] <target>：编译期别名——之后对 name 的引用等价于 target。
         仅顶层（与 const 一致）。target 可为普通变量/另一别名/const 常量名。"""
         self.next()   # 消费 alias
         n = self.cur()
@@ -484,6 +489,9 @@ class Parser:
         name = n.text
         self.next()
         self.skip_nl()
+        if self.at("=", text="="):
+            self.next()
+            self.skip_nl()
         t = self.cur()
         if t.kind != "ID":
             raise S2CError("alias %r 后需要目标变量名" % name, t.line, t.col)
@@ -1094,6 +1102,11 @@ class Compiler:
         k = st[0]
         if k == "call":
             name, args = st[1], st[2]
+            if name == "cache":
+                if len(args) > 1:
+                    raise S2CError("cache 最多接受一个子命令参数")
+                lines.append("cache" if not args else "cache " + self.quote_lit(args[0]))
+                return
             if name in self.fns:
                 if self._in_runtime:
                     # 运行时函数体内部：一律内联（无嵌套 callf/retf）

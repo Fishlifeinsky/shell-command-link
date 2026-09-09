@@ -1,6 +1,7 @@
 # SCL（Shell-Command-Link）简易指令链脚本库
 
-嵌入式友好的「shell + 指令链脚本」C 库：**静态内存、无 malloc、无 OS/HAL/libc 依赖**，仅需提供一个字符输出函数。
+嵌入式友好的「shell + 指令链脚本」C 库：**默认静态内存、无 malloc、无 OS/HAL/libc 依赖**，
+也可选用应用提供的 allocator 动态管理运行缓冲；仅需提供一个字符输出函数。
 
 ## 特性速览
 
@@ -33,6 +34,9 @@
 - **环境变量缓冲（持久配置）**：默认配置表装载 → 脚本 `${}`/命令/运算只读可见；
   `Scl_Env_Set` 修改；`Scl_Env_Save/Load` 序列化固化到用户自有存储(EEPROM/Flash/文件)
   与恢复；坏存储自动回退默认（`SCL_CFG_ENV_MAX` 可裁剪）
+- **可选动态内存**：`SCL_CFG_DYNAMIC_MEM_EN=1` 时由应用提供 `alloc/realloc/free + ctx`，
+  `SCL_InitEx()` 初始化最小运行缓冲，变量名和值按需分配；`cache`/`cache gc`/
+  `cache zombie` 查询和回收缓存
 - **MCU 串口模拟**（example/sim_uart）：把 PC 终端当串口体验/调试
 - **MCU(STM32) 移植模板**（example/mcu_template）：真实工程样板 —— HAL UART 移植层
   + main 集成骨架（env 固化 + const 自检程序 + Shell）+ PC 无板自检（mcu_boot_sim）
@@ -77,6 +81,7 @@ SCL 核心约为：代码 `.text` 22.4 KB、只读数据 `.rdata` 5.0 KB、静�
 | `doc/arc/scl-shell-sim.md` | **v0.3**：交互 Shell + MCU 串口模拟 + VarKeep |
 | `doc/arc/scl-env-buffer.md` | **v0.3**：环境变量缓冲（默认装载/固化/恢复） |
 | `doc/arc/scl-cmddesc.md` | **v0.3**：多模块源码 + 命令描述注册辅助（argtable3 风格） |
+| `doc/arc/scl-dynamic-mem.md` | **v0.4**：可选动态内存、变量懒分配与 cache/GC |
 | `doc/arc/scl-const.md` | **v0.3**：const 只读常量（链式/C API/现代源） |
 | `doc/other/scl-config-profiles.md` | **v0.3**：配置裁剪档模板（min/平衡/full + 内存预算） |
 | `doc/spec/scl-spec.md` | 语法/API/移植/裁剪规格 + 集成示例 |

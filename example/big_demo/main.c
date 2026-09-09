@@ -14,7 +14,7 @@
   *
   *  编译：
   *    gcc -O2 -Wall -Wextra -I scl/Inc -I scl/Src -I example -I example/big_demo \
-  *        -DSCL_CFG_VAR_MAX=12 -DSCL_CFG_ARG_MAX=12 \
+    *        -DSCL_CFG_DYNAMIC_MEM_EN=1 -DSCL_CFG_VAR_MAX=12 -DSCL_CFG_ARG_MAX=12 \
   *        scl/Src/scl.c scl/Src/scl_var.c scl/Src/scl_env.c \
   *        example/scl_port.c \
   *        example/big_demo/b_sim.c example/big_demo/b_cmds1.c \
@@ -27,6 +27,7 @@
   */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "scl.h"
@@ -41,6 +42,24 @@
 static char g_cap[1u << 16];
 static int g_pass = 0;
 static int g_fail = 0;
+
+static void *Big_Alloc(void *ctx, size_t size)
+{
+    (void)ctx;
+    return malloc(size);
+}
+
+static void *Big_Realloc(void *ctx, void *ptr, size_t size)
+{
+    (void)ctx;
+    return realloc(ptr, size);
+}
+
+static void Big_Free(void *ctx, void *ptr)
+{
+    (void)ctx;
+    free(ptr);
+}
 
 #define CHK(cond, msg) \
     do { \
@@ -100,12 +119,21 @@ int main(void)
     printf("==== big_demo: SCL 复杂项目（C 混合控制）====\n");
 
     /* ---- 0. 初始化：库 + 设备模拟 + 命令 + env + 脚本命令 ---- */
-    SCL_Init();
+    {
+        scl_allocator_t mem = { Big_Alloc, Big_Realloc, Big_Free, NULL };
+        CHK(SCL_InitEx(&mem) != 0u, "动态 allocator 初始化");
+    }
+    printf("  [TRACE] allocator ready\n");
     b_sim_init();
+    printf("  [TRACE] simulator ready\n");
     Big_CmdDev_Register();        /* 老化炉/电机/IO（22 命令） */
+    printf("  [TRACE] device commands ready\n");
     Big_CmdFlow_Register();       /* 批次/统计/校准/诊断/工具（9 命令） */
+    printf("  [TRACE] flow commands ready\n");
     Big_Env_Register();           /* env 默认运行参数 */
+    printf("  [TRACE] env ready\n");
     Big_Scmd_RegisterAll();       /* 4 个 .s2c → 脚本命令 */
+    printf("  [TRACE] script commands ready\n");
     S = b_sim_get();
 
     /* ---- 1. C 层直接控制：用变量 API + 链文本 ---- */
@@ -172,6 +200,16 @@ int main(void)
             "累计统计只来自 run_lot(4 件)");
         printf("     环境运行参数已由脚本消费（见上 tgt=60 sweep=120）\n");
     }
+
+    /* ---- 9. 动态缓存：当前/峰值/max/变量 GC/僵尸 GC ---- */
+    printf("-- [C] 动态缓存统计与 GC --\n");
+    CHK(Big_RunLine("cache", NULL) == 0, "cache 查询完成");
+    CHK(CapHas("cache current=") && CapHas("peak=") && CapHas("alloc="),
+        "cache 输出当前/峰值/分配统计");
+    CHK(Big_RunLine("cache max", NULL) == 0, "cache max 查询完成");
+    CHK(Big_RunLine("cache gc", NULL) == 0, "cache gc 完成");
+    CHK(CapHas("gc=") && CapHas("zombie="), "cache gc 输出回收统计");
+    CHK(Big_RunLine("cache zombie", NULL) == 0, "cache zombie 完成");
 
     printf("\n==== big_demo 自测汇总: PASS=%d FAIL=%d ====\n", g_pass, g_fail);
     return (g_fail == 0) ? 0 : 1;

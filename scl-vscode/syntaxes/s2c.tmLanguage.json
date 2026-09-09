@@ -8,8 +8,14 @@
     { "include": "#varref" },
     { "include": "#numbers" },
     { "include": "#types" },
+    { "include": "#function-definitions" },
+    { "include": "#function-calls" },
+    { "include": "#variable-declarations" },
+    { "include": "#alias-definitions" },
     { "include": "#keywords" },
     { "include": "#operators" },
+    { "include": "#identifiers" },
+    { "include": "#punctuation" },
     { "include": "#flag" }
   ],
   "repository": {
@@ -52,10 +58,52 @@
       "match": "\\b(bool|int|flag|string)\\b",
       "name": "storage.type.scl-s2c"
     },
+    "function-definitions": {
+      "begin": "\\b(fn)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\(",
+      "beginCaptures": {
+        "1": { "name": "keyword.control.scl-s2c" },
+        "2": { "name": "entity.name.function.scl-s2c" }
+      },
+      "end": "\\)",
+      "endCaptures": {
+        "0": { "name": "punctuation.definition.parameters.end.scl-s2c" }
+      },
+      "patterns": [
+        { "include": "#parameters" }
+      ]
+    },
+    "parameters": {
+      "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b",
+      "name": "variable.parameter.scl-s2c"
+    },
+    "function-calls": {
+      "match": "\\b(?!if\\b|else\\b|while\\b|do\\b|when\\b|for\\b|fn\\b|ret\\b|var\\b|const\\b|free\\b|cache\\b|break\\b|continue\\b)([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\\()",
+      "captures": {
+        "1": { "name": "entity.name.function.scl-s2c" }
+      }
+    },
+    "variable-declarations": {
+      "match": "\\b(var|const)\\s+(?:(const)\\s+)?(bool|int|flag|string)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "keyword.control.scl-s2c" },
+        "2": { "name": "keyword.control.scl-s2c" },
+        "3": { "name": "storage.type.scl-s2c" },
+        "4": { "name": "variable.other.definition.scl-s2c" }
+      }
+    },
+    "alias-definitions": {
+      "match": "\\b(alias)\\s+([A-Za-z_][A-Za-z0-9_]*)(\\s*=\\s*)([A-Za-z_][A-Za-z0-9_]*)",
+      "captures": {
+        "1": { "name": "keyword.control.scl-s2c" },
+        "2": { "name": "variable.other.definition.scl-s2c" },
+        "3": { "name": "keyword.operator.assignment.scl-s2c" },
+        "4": { "name": "variable.other.scl-s2c" }
+      }
+    },
     "keywords": {
       "patterns": [
         {
-          "match": "\\b(if|else|while|do|when|for|fn|ret|break|continue|var|const|free)\\b",
+          "match": "\\b(if|else|while|do|when|for|fn|ret|break|continue|var|const|free|alias|cache)\\b",
           "name": "keyword.control.scl-s2c"
         },
         {
@@ -75,6 +123,14 @@
           "name": "keyword.operator.scl-s2c"
         }
       ]
+    },
+    "identifiers": {
+      "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b",
+      "name": "variable.other.scl-s2c"
+    },
+    "punctuation": {
+      "match": "[(){}\\[\\],;:]",
+      "name": "punctuation.separator.scl-s2c"
     },
     "flag": {
       "match": "\\-[A-Za-z][A-Za-z0-9_]*\\b",

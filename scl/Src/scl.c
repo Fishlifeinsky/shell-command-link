@@ -107,6 +107,7 @@ enum
     /* v0.3d：运行时子程序（S2C fn 非内联）——全局 fn_back 保存单层返回点，无嵌套/递归 */
     SCL_OP_CALLF = 0x0029u,   /* callf <label>：保存返回点(下一条)到 fn_back，跳转到 label */
     SCL_OP_RETF  = 0x002Au,   /* retf：无条件跳回 fn_back（aoff 忽略） */
+    SCL_OP_CACHE = 0x002Bu,   /* cache [max|gc|zombie]：缓存统计与 GC */
 
     SCL_OP_CMD_BASE = 0x0100u  /* 注册命令 opcode 起点（自动递增） */
 };
@@ -131,7 +132,11 @@ static scl_prog_t s_prog;                 /* 激活程序；bc==NULL 表示未�
 
 #if (SCL_CFG_RUN_TEXT_EN != 0u)
 /* ---- 字节码程序（SCL_Run 动态编译产物，跨 tick 持久） ---- */
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+static uint8_t *s_bc = NULL;
+#else
 static uint8_t  s_bc[SCL_CFG_BC_MAX];       /* 每条指令 4 字节 */
+#endif
 static uint16_t s_bc_len = 0u;              /* 有效字节数（4 的倍数） */
 #endif
 static uint16_t s_pc     = 0u;              /* 程序计数器（解释执行） */
@@ -143,7 +148,11 @@ static uint32_t s_steps  = 0u;              /* 本脚本已执行步数（步进
      type 块（type 开头，无空格分隔）：
        BOOL=0x01+v(1) | INT=0x02+4B 大端 | FLAG=0x03+c(1) | STR=0x04+len(1)+bytes
      total=块序列字节数（不含自身）；argOff==0 表示无参数（保留缓存第 0 字节） ---- */
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+static uint8_t *s_argc = NULL;
+#else
 static uint8_t  s_argc[SCL_CFG_ARG_CACHE_MAX];
+#endif
 static uint16_t s_arg_len = 0u;
 
 /* ---- label 表：label 名 → 下一条指令字节偏移（仅编译期用，编译后回填为绝对偏移） ---- */
@@ -152,7 +161,11 @@ typedef struct
     char     name[SCL_CFG_LABEL_NAME_MAX + 1u];
     uint16_t off;
 } scl_label_t;
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+static scl_label_t *s_labels = NULL;
+#else
 static scl_label_t s_labels[SCL_CFG_LABEL_MAX];
+#endif
 static uint8_t     s_label_cnt = 0u;
 #endif
 
@@ -168,14 +181,181 @@ static uint8_t  s_busy = 0u;
 static volatile uint8_t s_abort = 0u;
 static scl_cmd_t *s_wait_cmd = NULL;         /* 正在异步等待的命令 */
 
+/* ---- 可选动态内存统计 ---- */
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+typedef struct
+{
+    size_t size;
+} scl_mem_hdr_t;
+static scl_allocator_t s_allocator;
+static size_t s_mem_current = 0u;
+static size_t s_mem_peak = 0u;
+static uint32_t s_mem_alloc_count = 0u;
+static uint32_t s_mem_free_count = 0u;
+static uint32_t s_mem_gc_count = 0u;
+#endif
+
+static uint8_t Scl_MemReady(void)
+{
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+    return (s_allocator.alloc != NULL) && (s_allocator.free != NULL) ? 1u : 0u;
+#else
+    return 1u;
+#endif
+}
+
+void *Scl_MemAlloc(size_t size)
+{
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+    scl_mem_hdr_t *h;
+    if (!Scl_MemReady() || size == 0u) { return NULL; }
+    h = (scl_mem_hdr_t *)s_allocator.alloc(s_allocator.ctx, sizeof(*h) + size);
+    if (h == NULL) { return NULL; }
+    h->size = size;
+    s_mem_current += size;
+    if (s_mem_current > s_mem_peak) { s_mem_peak = s_mem_current; }
+    s_mem_alloc_count++;
+    return (void *)(h + 1);
+#else
+    (void)size;
+    return NULL;
+#endif
+}
+
+void *Scl_MemRealloc(void *ptr, size_t size)
+{
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+    scl_mem_hdr_t *h;
+    size_t old;
+    if (ptr == NULL) { return Scl_MemAlloc(size); }
+    if (size == 0u) { Scl_MemFree(ptr); return NULL; }
+    if (s_allocator.realloc == NULL) { return NULL; }
+    h = ((scl_mem_hdr_t *)ptr) - 1;
+    old = h->size;
+    h = (scl_mem_hdr_t *)s_allocator.realloc(s_allocator.ctx, h, sizeof(*h) + size);
+    if (h == NULL) { return NULL; }
+    h->size = size;
+    s_mem_current = s_mem_current - old + size;
+    if (s_mem_current > s_mem_peak) { s_mem_peak = s_mem_current; }
+    return (void *)(h + 1);
+#else
+    (void)ptr; (void)size;
+    return NULL;
+#endif
+}
+
+void Scl_MemFree(void *ptr)
+{
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+    scl_mem_hdr_t *h;
+    if (ptr == NULL || !Scl_MemReady()) { return; }
+    h = ((scl_mem_hdr_t *)ptr) - 1;
+    if (s_mem_current >= h->size) { s_mem_current -= h->size; }
+    s_mem_free_count++;
+    s_allocator.free(s_allocator.ctx, h);
+#else
+    (void)ptr;
+#endif
+}
+
+void Scl_MemGcCount(void)
+{
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+    s_mem_gc_count++;
+#endif
+}
+
+size_t Scl_MemCurrent(void) { return
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+    s_mem_current
+#else
+    0u
+#endif
+; }
+size_t Scl_MemPeak(void) { return
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+    s_mem_peak
+#else
+    0u
+#endif
+; }
+size_t Scl_MemCapacity(void) { return
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+    0u
+#else
+    (size_t)SCL_CFG_BC_MAX + SCL_CFG_ARG_CACHE_MAX +
+    (size_t)SCL_CFG_VAR_MAX * (SCL_CFG_VAR_NAME_MAX + 1u + SCL_CFG_VAR_VALUE_MAX) +
+    64u + SCL_CFG_ARG_BUF_BYTES
+#endif
+; }
+uint32_t Scl_MemAllocCount(void) { return
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+    s_mem_alloc_count
+#else
+    0u
+#endif
+; }
+uint32_t Scl_MemFreeCount(void) { return
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+    s_mem_free_count
+#else
+    0u
+#endif
+; }
+uint32_t Scl_MemGcTotal(void) { return
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+    s_mem_gc_count
+#else
+    0u
+#endif
+; }
+
+uint8_t SCL_CacheInfo(scl_cache_info_t *info)
+{
+    if (info == NULL) { return 0u; }
+    info->current = Scl_MemCurrent();
+    info->peak = Scl_MemPeak();
+    info->capacity = Scl_MemCapacity();
+    info->alloc_count = Scl_MemAllocCount();
+    info->free_count = Scl_MemFreeCount();
+    info->gc_count = Scl_MemGcTotal();
+    info->zombie_count = 0u;
+    return 1u;
+}
+
+uint8_t SCL_CacheGc(void)
+{
+    uint8_t r = Scl_VarGc();
+    if (r != 0u) { Scl_MemGcCount(); }
+    return r;
+}
+
+uint8_t SCL_CacheGcZombie(void)
+{
+    uint8_t r = Scl_VarGcZombie();
+    if (r != 0u) { Scl_MemGcCount(); }
+    return r;
+}
+
 /* ---- 参数工作缓冲 ---- */
 #define SCL_RAW_MAX 64u                      /* 元指令参数原文上限（含 '\0'；var 整段 <40B、help/free 更短） */
-static char  s_raw[SCL_RAW_MAX];             /* 从缓存取出的参数原文（STR 块） */
-static char  s_argb[SCL_CFG_ARG_MAX][SCL_CFG_ARG_LEN_MAX];
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+static char *s_raw = NULL;
+static char (*s_argb)[SCL_CFG_ARG_LEN_MAX] = NULL;
+static char **s_argv = NULL;
+static uint8_t *s_argt = NULL;
+#else
+static char s_raw[SCL_RAW_MAX];             /* 从缓存取出的参数原文 */
+static char s_argb[SCL_CFG_ARG_MAX][SCL_CFG_ARG_LEN_MAX];
 static char *s_argv[SCL_CFG_ARG_MAX];
 static uint8_t s_argt[SCL_CFG_ARG_MAX];       /* 当前命令各参数 type（SCL_ArgType 用） */
+#endif
 #define SCL_CMDNAME_MAX 32u                   /* CALLN 命令名缓冲长度（含 '\0'） */
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+static char *s_cmdname = NULL;                /* CALLN：动态工作区 */
+#else
 static char s_cmdname[SCL_CMDNAME_MAX];       /* CALLN：当前按名调用命令名（运行工作区） */
+#endif
 
 /* ========================== 文本小工具（不依赖 libc） ========================== */
 
@@ -1331,6 +1511,10 @@ static uint8_t Scl_Compile(const char *script)
                 {
                     opc = SCL_OP_FREE;
                 }
+                else if ((cl.hlen == 5u) && Scl_EqN(cl.hs, "cache", 5u))
+                {
+                    opc = SCL_OP_CACHE;
+                }
                 else
                 {
                     scl_cmd_t *nd = Scl_CmdFindName(cl.hs, cl.hlen);
@@ -1347,7 +1531,8 @@ static uint8_t Scl_Compile(const char *script)
                     opc = nd->opc;
                 }
             }
-            if ((opc == SCL_OP_HELP) || (opc == SCL_OP_VAR) || (opc == SCL_OP_FREE))
+            if ((opc == SCL_OP_HELP) || (opc == SCL_OP_VAR) ||
+                (opc == SCL_OP_FREE) || (opc == SCL_OP_CACHE))
             {
                 /* 元指令：整段原文按单个 STR 块存（var/free/help 内部自行解析） */
                 aoff = Scl_ArgStoreMeta(cl.rs, (uint16_t)(cl.re - cl.rs));
@@ -1415,7 +1600,7 @@ static void Scl_DescPrintDetail(const scl_cmd_t *nd);    /* 前向：help <cmd> 
 static void Scl_DoHelp(void)
 {
     scl_cmd_t *node;
-    Scl_Msg("scl: 内置元命令: var / free / help / label / jump\r\n");
+    Scl_Msg("scl: 内置元命令: var / free / help / cache / label / jump\r\n");
     Scl_Msg("scl: 内置运算: iadd isub imul idiv imod ineg | ieq ine igt ige ilt ile\r\n");
     Scl_Msg("scl:            band bor bnot btest | iand ior ixor inot shl shr | seq sneq\r\n");
     Scl_Msg("scl: var <type> <name>=<value>, type = bool/int/flag/string\r\n");
@@ -1476,7 +1661,13 @@ static const scl_help_doc_t s_help_meta[] =
     { "jump",
       "跳转（汇编式控制流）\r\n"
       "  jump <name>         无条件跳转\r\n"
-      "  jump -a <name>      G_RETURN 为真时跳转（读后清零）" }
+            "  jump -a <name>      G_RETURN 为真时跳转（读后清零）" },
+        { "cache",
+            "缓存统计与垃圾回收\r\n"
+            "  cache                查看当前/峰值/容量/GC统计\r\n"
+            "  cache max            查看峰值（与 cache 相同）\r\n"
+            "  cache gc             收缩变量值缓冲\r\n"
+            "  cache zombie         清理未使用变量槽残留缓冲" }
 };
 
 /* 内置运算指令帮助（分组, 组内各 token 均命中同组说明） */
@@ -1929,6 +2120,25 @@ static void Scl_DoFreeRaw(const char *raw)
     }
 }
 
+static void Scl_DoCacheRaw(const char *raw)
+{
+    scl_cache_info_t info;
+    if ((raw != NULL) && Scl_StrEq(raw, "gc"))
+    {
+        SCL_CacheGc();
+    }
+    else if ((raw != NULL) && Scl_StrEq(raw, "zombie"))
+    {
+        SCL_CacheGcZombie();
+    }
+    if (SCL_CacheInfo(&info) == 0u) { return; }
+    Scl_Msg("scl: cache current=%u peak=%u capacity=%u alloc=%u free=%u gc=%u zombie=%u\r\n",
+            (unsigned int)info.current, (unsigned int)info.peak,
+            (unsigned int)info.capacity, (unsigned int)info.alloc_count,
+            (unsigned int)info.free_count, (unsigned int)info.gc_count,
+            (unsigned int)info.zombie_count);
+}
+
 /* ========================== 收尾 ========================== */
 
 static void Scl_Finish(int reason)
@@ -2217,6 +2427,11 @@ static void Scl_StepOnce(void)
         s_pc = next;
         return;
 
+    case SCL_OP_CACHE:
+        Scl_DoCacheRaw(Scl_ArgLoad(aoff));
+        s_pc = next;
+        return;
+
     default:
         if (opc == SCL_OP_CALLN)
         {
@@ -2300,8 +2515,82 @@ static void Scl_StepOnce(void)
 
 /* ========================== 公共接口实现 ========================== */
 
-void SCL_Init(void)
+static void Scl_DynamicRelease(void)
 {
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+    Scl_EnvShutdown();
+    Scl_VarShutdown();
+#if (SCL_CFG_RUN_TEXT_EN != 0u)
+    Scl_MemFree(s_bc);    s_bc = NULL;
+    Scl_MemFree(s_argc);  s_argc = NULL;
+    Scl_MemFree(s_labels); s_labels = NULL;
+#endif
+    Scl_MemFree(s_raw);   s_raw = NULL;
+    Scl_MemFree(s_argb);  s_argb = NULL;
+    Scl_MemFree(s_argv);  s_argv = NULL;
+    Scl_MemFree(s_argt);  s_argt = NULL;
+    Scl_MemFree(s_cmdname); s_cmdname = NULL;
+#endif
+}
+
+uint8_t SCL_InitEx(const scl_allocator_t *allocator)
+{
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+    uint16_t i;
+    if ((allocator == NULL) || (allocator->alloc == NULL) ||
+        (allocator->realloc == NULL) || (allocator->free == NULL))
+    {
+        s_inited = 0u;
+        return 0u;
+    }
+    if (s_inited != 0u) { Scl_DynamicRelease(); }
+    s_allocator = *allocator;
+    s_mem_current = 0u;
+    s_mem_peak = 0u;
+    s_mem_alloc_count = 0u;
+    s_mem_free_count = 0u;
+    s_mem_gc_count = 0u;
+#if (SCL_CFG_RUN_TEXT_EN != 0u)
+    s_bc = (uint8_t *)Scl_MemAlloc(SCL_CFG_BC_MAX);
+    s_argc = (uint8_t *)Scl_MemAlloc(SCL_CFG_ARG_CACHE_MAX);
+    s_labels = (scl_label_t *)Scl_MemAlloc(sizeof(scl_label_t) * SCL_CFG_LABEL_MAX);
+#endif
+    s_raw = (char *)Scl_MemAlloc(SCL_RAW_MAX);
+    s_argb = (char (*)[SCL_CFG_ARG_LEN_MAX])Scl_MemAlloc(SCL_CFG_ARG_BUF_BYTES);
+    s_argv = (char **)Scl_MemAlloc(sizeof(char *) * SCL_CFG_ARG_MAX);
+    s_argt = (uint8_t *)Scl_MemAlloc(SCL_CFG_ARG_MAX);
+    s_cmdname = (char *)Scl_MemAlloc(SCL_CMDNAME_MAX);
+#if (SCL_CFG_RUN_TEXT_EN != 0u)
+    if ((s_bc == NULL) || (s_argc == NULL) || (s_labels == NULL))
+#else
+    if (0)
+#endif
+    {
+        Scl_DynamicRelease();
+        return 0u;
+    }
+    if ((s_raw == NULL) || (s_argb == NULL) || (s_argv == NULL) || (s_argt == NULL) ||
+        (s_cmdname == NULL) ||
+        (Scl_VarInit() == 0u)
+    #if (SCL_CFG_ENV_EN != 0u)
+        || (Scl_EnvInit() == 0u)
+    #endif
+        )
+    {
+        Scl_DynamicRelease();
+        return 0u;
+    }
+    for (i = 0u; i < SCL_CFG_ARG_MAX; i++)
+    {
+        s_argv[i] = &s_argb[i][0];
+    }
+#else
+    (void)allocator;
+    Scl_VarInit();
+#if (SCL_CFG_ENV_EN != 0u)
+    Scl_EnvInit();
+#endif
+#endif
     s_cmd_head  = NULL;
     s_next_opc  = (uint16_t)SCL_OP_CMD_BASE;
 #if ((SCL_CFG_SCMD_EN != 0u) && (SCL_CFG_RUN_PROG_EN != 0u))
@@ -2323,8 +2612,13 @@ void SCL_Init(void)
 #endif
     s_ret       = 0u;
     s_keep_vars = 0u;
-    SCL_VarFreeAll();
     s_inited    = 1u;
+    return 1u;
+}
+
+void SCL_Init(void)
+{
+    (void)SCL_InitEx(NULL);
 }
 
 #if (SCL_CFG_RUN_TEXT_EN != 0u)
@@ -2335,6 +2629,7 @@ uint8_t SCL_Run(const char *script)
     if (s_inited == 0u)
     {
         SCL_Init();
+        if (s_inited == 0u) { return 0u; }
     }
     if (s_busy != 0u)
     {
@@ -2393,6 +2688,7 @@ uint8_t SCL_RunProg(const scl_prog_t *prog)
     if (s_inited == 0u)
     {
         SCL_Init();
+        if (s_inited == 0u) { return 0u; }
     }
     if (s_busy != 0u)
     {

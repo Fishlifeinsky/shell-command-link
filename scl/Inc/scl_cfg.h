@@ -8,7 +8,7 @@
   *            2) 或在编译命令行用 -DSCL_CFG_XXX=yyy 覆盖（本文件所有宏均带 #ifndef 保护）。
   *
   *          说明：
-  *            - 库全程静态内存、无 malloc、无 OS、无 HAL、无 libc 依赖；
+   *            - 默认静态内存、无 malloc；可选动态模式由应用提供 allocator；
   *            - 关闭 SCL_CFG_MSG_EN 后，库内消息输出整段裁掉，连移植函数
   *              SCL_Port_PutChar 都可不实现；
   *            - 占用预算见 doc/arc/shell-command-link-design.md §5.4。
@@ -37,6 +37,17 @@ extern "C" {
 /* 变量值缓冲字节数（含结尾 '\0'，即最多可存 15 字符） */
 #ifndef SCL_CFG_VAR_VALUE_MAX
 #define SCL_CFG_VAR_VALUE_MAX    16u
+#endif
+
+/* 动态内存模式：1=由 SCL_InitEx 提供的 allocator 管理运行缓冲；0=静态数组。
+   动态模式下变量名/值按需分配，解释器工作区在初始化时分配。 */
+#ifndef SCL_CFG_DYNAMIC_MEM_EN
+#define SCL_CFG_DYNAMIC_MEM_EN   0u
+#endif
+
+/* 动态模式下保留的最小变量槽数量；变量名/值仍按首次使用懒分配。 */
+#ifndef SCL_CFG_DYNAMIC_VAR_MAX
+#define SCL_CFG_DYNAMIC_VAR_MAX  SCL_CFG_VAR_MAX
 #endif
 
 /* ============================ 文本 / 字节码 / 参数缓存 ============================ */

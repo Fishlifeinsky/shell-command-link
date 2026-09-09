@@ -3,9 +3,67 @@
 
 #if (SCL_CFG_ENV_EN != 0u)
 /* ---- env 缓冲与默认配置表（本模块持有；读回退经 scl_priv.h 共享） ---- */
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+scl_var_t *s_env = NULL;
+#else
 scl_var_t s_env[SCL_CFG_ENV_MAX];
+#endif
 const scl_env_def_t *s_env_def = NULL;
 uint16_t            s_env_def_n = 0u;
+
+uint8_t Scl_EnvInit(void)
+{
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+    uint16_t i;
+    s_env = (scl_var_t *)Scl_MemAlloc(sizeof(scl_var_t) * SCL_CFG_ENV_MAX);
+    if (s_env == NULL) { return 0u; }
+    for (i = 0u; i < SCL_CFG_ENV_MAX; i++)
+    {
+        s_env[i].name = NULL;
+        s_env[i].value = NULL;
+        s_env[i].name_cap = 0u;
+        s_env[i].value_cap = 0u;
+        s_env[i].type = 0u;
+        s_env[i].used = 0u;
+        s_env[i].ro = 0u;
+    }
+#endif
+    return 1u;
+}
+
+void Scl_EnvShutdown(void)
+{
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+    uint16_t i;
+    if (s_env == NULL) { return; }
+    for (i = 0u; i < SCL_CFG_ENV_MAX; i++)
+    {
+        Scl_MemFree(s_env[i].name);
+        Scl_MemFree(s_env[i].value);
+    }
+    Scl_MemFree(s_env);
+    s_env = NULL;
+#endif
+}
+
+static void Scl_EnvClearSlot(scl_var_t *slot)
+{
+    if (slot == NULL) { return; }
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+    Scl_MemFree(slot->name);
+    Scl_MemFree(slot->value);
+    slot->name = NULL;
+    slot->value = NULL;
+    slot->name_cap = 0u;
+    slot->value_cap = 0u;
+#else
+    slot->name[0] = '\0';
+    slot->value[0] = '\0';
+#endif
+    slot->type = 0u;
+    slot->used = 0u;
+    slot->ro = 0u;
+}
 
 /* ========================== 环境变量缓冲（持久配置） ========================== */
 
@@ -57,6 +115,17 @@ static int Scl_EnvSetCore(const char *name, uint8_t type, const char *val)
         {
             return -1;
         }
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+        s_env[idx].name = (char *)Scl_MemAlloc((size_t)Scl_StrLen(name) + 1u);
+        s_env[idx].value = (char *)Scl_MemAlloc((size_t)Scl_StrLen(norm) + 1u);
+        if ((s_env[idx].name == NULL) || (s_env[idx].value == NULL))
+        {
+            Scl_EnvClearSlot(&s_env[idx]);
+            return -1;
+        }
+        s_env[idx].name_cap = (uint16_t)(Scl_StrLen(name) + 1u);
+        s_env[idx].value_cap = (uint16_t)(Scl_StrLen(norm) + 1u);
+#endif
         s_env[idx].used = 1u;
         s_env[idx].ro   = 0u;
         for (i = 0u; name[i] != '\0'; i++)
@@ -65,6 +134,15 @@ static int Scl_EnvSetCore(const char *name, uint8_t type, const char *val)
         }
         s_env[idx].name[i] = '\0';
     }
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+    {
+        uint16_t need = (uint16_t)(Scl_StrLen(norm) + 1u);
+        char *nv = (char *)Scl_MemRealloc(s_env[idx].value, need);
+        if (nv == NULL) { return -1; }
+        s_env[idx].value = nv;
+        s_env[idx].value_cap = need;
+    }
+#endif
     s_env[idx].type = type;
     for (i = 0u; norm[i] != '\0'; i++)
     {
@@ -113,11 +191,7 @@ int Scl_Env_FreeAll(void)
     {
         if (s_env[i].used != 0u)
         {
-            s_env[i].used = 0u;
-            s_env[i].type = 0u;
-            s_env[i].ro   = 0u;
-            s_env[i].name[0] = '\0';
-            s_env[i].value[0] = '\0';
+            Scl_EnvClearSlot(&s_env[i]);
             n++;
         }
     }

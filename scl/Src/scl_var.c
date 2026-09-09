@@ -7,7 +7,67 @@
 #include "scl_priv.h"
 
 /* ---- 会话变量表（本模块持有；core/env 经 scl_priv.h 只读访问） ---- */
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+scl_var_t *s_vars = NULL;
+#else
 scl_var_t s_vars[SCL_CFG_VAR_MAX];
+#endif
+
+uint8_t Scl_VarInit(void)
+{
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+    uint16_t i;
+    s_vars = (scl_var_t *)Scl_MemAlloc(sizeof(scl_var_t) * SCL_CFG_VAR_MAX);
+    if (s_vars == NULL) { return 0u; }
+    for (i = 0u; i < SCL_CFG_VAR_MAX; i++)
+    {
+        s_vars[i].name = NULL;
+        s_vars[i].value = NULL;
+        s_vars[i].name_cap = 0u;
+        s_vars[i].value_cap = 0u;
+        s_vars[i].used = 0u;
+        s_vars[i].ro = 0u;
+        s_vars[i].type = 0u;
+    }
+#else
+    SCL_VarFreeAll();
+#endif
+    return 1u;
+}
+
+void Scl_VarShutdown(void)
+{
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+    uint16_t i;
+    if (s_vars == NULL) { return; }
+    for (i = 0u; i < SCL_CFG_VAR_MAX; i++)
+    {
+        Scl_MemFree(s_vars[i].name);
+        Scl_MemFree(s_vars[i].value);
+    }
+    Scl_MemFree(s_vars);
+    s_vars = NULL;
+#endif
+}
+
+static void Scl_VarClearSlot(scl_var_t *slot)
+{
+    if (slot == NULL) { return; }
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+    Scl_MemFree(slot->name);
+    Scl_MemFree(slot->value);
+    slot->name = NULL;
+    slot->value = NULL;
+    slot->name_cap = 0u;
+    slot->value_cap = 0u;
+#else
+    slot->name[0] = '\0';
+    slot->value[0] = '\0';
+#endif
+    slot->used = 0u;
+    slot->type = 0u;
+    slot->ro = 0u;
+}
 
 /* ========================== 变量实现（v0.2 类型化） ========================== */
 
@@ -164,6 +224,17 @@ static int Scl_VarSetCoreEx(const char *name, uint8_t type, const char *val, uin
         {
             return -1;   /* 满 */
         }
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+        s_vars[idx].name = (char *)Scl_MemAlloc((size_t)Scl_StrLen(name) + 1u);
+        s_vars[idx].value = (char *)Scl_MemAlloc((size_t)Scl_StrLen(norm) + 1u);
+        if ((s_vars[idx].name == NULL) || (s_vars[idx].value == NULL))
+        {
+            Scl_VarClearSlot(&s_vars[idx]);
+            return -1;
+        }
+        s_vars[idx].name_cap = (uint16_t)(Scl_StrLen(name) + 1u);
+        s_vars[idx].value_cap = (uint16_t)(Scl_StrLen(norm) + 1u);
+#endif
         s_vars[idx].used = 1u;
         s_vars[idx].ro   = ro;
         for (i = 0u; name[i] != '\0'; i++)
@@ -180,6 +251,16 @@ static int Scl_VarSetCoreEx(const char *name, uint8_t type, const char *val, uin
     {
         s_vars[idx].ro = ro;   /* 普通变量可升级为 const */
     }
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+    if (idx >= 0)
+    {
+        uint16_t need = (uint16_t)(Scl_StrLen(norm) + 1u);
+        char *nv = (char *)Scl_MemRealloc(s_vars[idx].value, need);
+        if (nv == NULL) { return -1; }
+        s_vars[idx].value = nv;
+        s_vars[idx].value_cap = need;
+    }
+#endif
     s_vars[idx].type = type;
     for (i = 0u; norm[i] != '\0'; i++)
     {
@@ -244,11 +325,7 @@ int SCL_VarFree(const char *name)
     {
         return -2;   /* 只读常量不可释放 */
     }
-    s_vars[idx].used = 0u;
-    s_vars[idx].type = 0u;
-    s_vars[idx].ro   = 0u;
-    s_vars[idx].name[0] = '\0';
-    s_vars[idx].value[0] = '\0';
+    Scl_VarClearSlot(&s_vars[idx]);
     return 0;
 }
 
@@ -260,11 +337,7 @@ int SCL_VarFreeAll(void)
     {
         if (s_vars[i].used != 0u)
         {
-            s_vars[i].used = 0u;
-            s_vars[i].type = 0u;
-            s_vars[i].ro   = 0u;
-            s_vars[i].name[0] = '\0';
-            s_vars[i].value[0] = '\0';
+            Scl_VarClearSlot(&s_vars[i]);
             n++;
         }
     }
@@ -288,6 +361,42 @@ int SCL_VarCount(void)
 int SCL_VarFreeCount(void)
 {
     return (int)SCL_CFG_VAR_MAX - SCL_VarCount();
+}
+
+uint8_t Scl_VarGc(void)
+{
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+    int i;
+    for (i = 0; i < (int)SCL_CFG_VAR_MAX; i++)
+    {
+        if (s_vars[i].used != 0u && s_vars[i].value != NULL)
+        {
+            uint16_t need = (uint16_t)(Scl_StrLen(s_vars[i].value) + 1u);
+            char *nv = (char *)Scl_MemRealloc(s_vars[i].value, need);
+            if (nv != NULL)
+            {
+                s_vars[i].value = nv;
+                s_vars[i].value_cap = need;
+            }
+        }
+    }
+#endif
+    return 1u;
+}
+
+uint8_t Scl_VarGcZombie(void)
+{
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+    int i;
+    for (i = 0; i < (int)SCL_CFG_VAR_MAX; i++)
+    {
+        if (s_vars[i].used == 0u)
+        {
+            Scl_VarClearSlot(&s_vars[i]);
+        }
+    }
+#endif
+    return 1u;
 }
 
 /* 会话变量保留：keep!=0 时脚本结束不自动释放变量（供交互 shell/长会话使用）。

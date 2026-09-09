@@ -40,7 +40,7 @@ def gen_scripts():
     print("生成脚本命令 C:", ", ".join(made))
 
 
-def build():
+def build(debug=False):
     srcs = [
         str(ROOT / "scl" / "Src" / "scl.c"),
         str(ROOT / "scl" / "Src" / "scl_var.c"),
@@ -54,9 +54,13 @@ def build():
         str(BD / "main.c"),
     ] + [str(p) for p in sorted(GEN.glob("sc_*.c"))]
     cmd = ["gcc", "-O2", "-Wall", "-Wextra", "-pipe",
+           "-DSCL_CFG_DYNAMIC_MEM_EN=1",
            "-DSCL_CFG_VAR_MAX=12",
            "-I", str(ROOT / "scl" / "Inc"), "-I", str(ROOT / "scl" / "Src"),
-           "-I", str(ROOT / "example"), "-I", str(BD)] + srcs + ["-o", str(EXE)]
+           "-I", str(ROOT / "example"), "-I", str(BD)] + srcs
+    if debug:
+        cmd += ["-g", "-O0"]
+    cmd += ["-o", str(EXE)]
     (ROOT / "build").mkdir(exist_ok=True)
     r = subprocess.run(cmd, capture_output=True)
     if r.returncode != 0:
@@ -68,9 +72,10 @@ def build():
 def main():
     ap = argparse.ArgumentParser(description="big_demo 一键构建/运行")
     ap.add_argument("--no-run", action="store_true", help="只生成 + 编译，不运行")
+    ap.add_argument("--debug", action="store_true", help="生成带调试符号的动态测试程序")
     args = ap.parse_args()
     gen_scripts()
-    build()
+    build(args.debug)
     if args.no_run:
         return 0
     r = subprocess.run([str(EXE)], timeout=180)

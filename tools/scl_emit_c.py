@@ -40,6 +40,7 @@ T_FLAG = 0x03
 T_STR = 0x04
 
 OP_HELP, OP_VAR, OP_FREE, OP_JUMP, OP_JUMPA = 1, 2, 3, 4, 5
+OP_CACHE = 0x2B
 OP_CALLN = 0x28
 OP_CALLF = 0x29   # callf <label>：运行时子程序调用（fn 非内联）
 OP_RETF  = 0x2A   # retf：跳回全局 fn_back
@@ -52,7 +53,7 @@ OPWORDS = [
     ("iand", 0x20), ("ior", 0x21), ("ixor", 0x22), ("inot", 0x23), ("shl", 0x24), ("shr", 0x25),
     ("seq", 0x26), ("sneq", 0x27),
 ]
-META_OPC = {"help": OP_HELP, "var": OP_VAR, "free": OP_FREE}
+META_OPC = {"help": OP_HELP, "var": OP_VAR, "free": OP_FREE, "cache": OP_CACHE}
 
 
 class EncError(Exception):

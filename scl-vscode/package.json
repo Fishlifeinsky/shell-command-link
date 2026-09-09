@@ -2,7 +2,7 @@
   "name": "scl-syntax",
   "displayName": "SCL syntax highlight (.s2c / .chain)",
   "description": "为 shell-command-link 库的两种脚本提供语法高亮：.s2c（现代源）与 .chain（SCL 指令链）。",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "publisher": "local-dev",
   "license": "MIT",
   "engines": {

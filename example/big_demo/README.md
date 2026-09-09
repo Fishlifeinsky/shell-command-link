@@ -34,13 +34,15 @@ example/big_demo/
 ## 构建 / 运行 / 自测
 
 ```bash
-python example/big_demo/build_big.py            # 生成 + 编译 + 运行（exit 0 = 全绿）
+python example/big_demo/build_big.py            # 动态 allocator 全量测试（exit 0 = 全绿）
 python example/big_demo/build_big.py --no-run   # 只生成 + 编译
+python example/big_demo/build_big.py --debug    # 动态模式带调试符号构建
 # 或用 README 等价 gcc 命令行（见 main.c 顶部注释）
 ```
 
-预期自测：**PASS=19 FAIL=0**（覆盖：C 变量 API、链文本、自检 6/6、env 读回、
-温循升温到位、批次 4 件=3良1不良、脚本命令 busy 拒、诊断读 env 等）。
+预期自测：**PASS=26 FAIL=0**（覆盖：动态 allocator、C/脚本变量与 const、env、
+命令描述/参数校验、异步设备命令、函数/表达式、Flash 脚本命令、busy 保护，以及
+`cache`、`cache max`、`cache gc`、`cache zombie`）。
 
 ## 三层混合控制（本项目想示范的）
 

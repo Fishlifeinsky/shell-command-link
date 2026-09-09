@@ -12,7 +12,7 @@ const int T_WORK  = 60     # 老化目标温度 ℃
 const int T_STEP  = 120    # 每件电机扫位步数
 const int GAP     = 2      # 件间隔(soak) tick
 
-alias n arg0               # n = 命令行第 1 参 = 批次件数
+alias n = arg0             # n = 命令行第 1 参 = 批次件数
 
 # ---- 变量 ----
 var int cnt = 0            # 已做件数

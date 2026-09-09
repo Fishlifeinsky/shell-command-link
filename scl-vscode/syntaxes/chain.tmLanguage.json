@@ -49,7 +49,7 @@
     "keywords": {
       "patterns": [
         {
-          "match": "\\b(label|jump|var|free|help)\\b",
+          "match": "\\b(label|jump|var|free|help|cache)\\b",
           "name": "keyword.control.scl-chain"
         },
         {
