@@ -580,6 +580,13 @@ static void Sh_RunLine(void)
     s_cur = 0u;
     s_line[0] = '\0';
     s_hist_pos = -1;
+    /* 若本次未在跑命令（空行 / run 拒绝 / 空闲）：没有 busy->idle 沿触发 Poll 的
+       提示符，这里立即补打一个，保证每次回车后都回到新的 scl>；
+       若上一条命令仍在执行（busy）则不补，等它完成由 Poll 打印 */
+    if (SCL_Idle() != 0u)
+    {
+        Sh_Puts(s_prompt);
+    }
 }
 
 /* ========================== 公共接口 ========================== */
