@@ -50,6 +50,12 @@ extern "C" {
 #define SCL_CFG_VAR_BIND_MAX    8u
 #endif
 
+/* 消息运行级默认值：运行时把 SCL_MsgLvl 设为 SCL_CFG_MSG_LVL（枚举见 scl.h）。
+   0=全静默；SCL_MSG_ALL(0xFF)=全量。编译不裁剪消息代码，仅按级别运行开关。 */
+#ifndef SCL_CFG_MSG_LVL
+#define SCL_CFG_MSG_LVL        0xFFu
+#endif
+
 /* 动态内存模式：1=由 SCL_InitEx 提供的 allocator 管理运行缓冲；0=静态数组。
    动态模式下变量名/值按需分配，解释器工作区在初始化时分配。 */
 #ifndef SCL_CFG_DYNAMIC_MEM_EN
@@ -123,9 +129,13 @@ extern "C" {
 
 /* 环境变量缓冲总开关：1=支持（默认配置表装载/用户存储装载、序列化固化导出）。
    环境变量在脚本读路径（${}、VarGet、运算/真值操作数）可见（会话变量优先）；
-   0=裁掉该表 */
+   0=裁掉该表；SCL_CFG_MINI_EN 最简档默认裁掉（可用 -D 覆盖为 1） */
 #ifndef SCL_CFG_ENV_EN
+#if (SCL_CFG_MINI_EN != 0u)
+#define SCL_CFG_ENV_EN        0u
+#else
 #define SCL_CFG_ENV_EN        1u
+#endif
 #endif
 
 /* env 槽数量（<=255，序列化字段为 1 字节） */

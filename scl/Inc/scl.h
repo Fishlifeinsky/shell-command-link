@@ -53,6 +53,35 @@ extern "C" {
 #include <stdbool.h>
 #include <stddef.h>   /* NULL（正规来源；严格工具链如 arm-none-eabi 下 stdio 不保证提供） */
 
+/* ============================ 消息级别（运行时可调；宏 SCL_CFG_MSG_LVL 设默认） ============================ */
+
+/**
+  * @brief  消息级别枚举（全局变量 SCL_MsgLvl 的取值）
+  * @note   消息代码始终编译，是否输出按 SCL_MsgLvl 在运行期决定：
+  *         信息类需 >= SCL_MSG_INFO；错误类需 >= SCL_MSG_ERR；
+  *         SCL_MSG_NONE=完全静默；默认值由 SCL_CFG_MSG_LVL 给定（默认 SCL_MSG_ALL）
+  */
+enum scl_msg_lvl_e
+{
+    SCL_MSG_NONE = 0u,
+    SCL_MSG_ERR  = 1u,
+    SCL_MSG_WARN = 2u,
+    SCL_MSG_INFO = 3u,
+    SCL_MSG_ALL  = 0xFFu
+};
+
+/**
+  * @brief  当前消息级别（全局枚举值，初始=SCL_CFG_MSG_LVL）
+  * @note   运行期可直接读写本全局变量，或用 SCL_MsgLevelSet/Get
+  */
+extern uint8_t SCL_MsgLvl;
+
+/** 设置消息级别（0=全静默；SCL_MSG_ALL=全量） */
+void SCL_MsgLevelSet(uint8_t lvl);
+
+/** 读取当前消息级别 */
+uint8_t SCL_MsgLevelGet(void);
+
 /* 可选动态内存提供者；ctx 由应用持有，库不解释其内容。 */
 typedef void *(*scl_alloc_fn)(void *ctx, size_t size);
 typedef void *(*scl_realloc_fn)(void *ctx, void *ptr, size_t size);

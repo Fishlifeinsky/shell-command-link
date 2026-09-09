@@ -799,13 +799,30 @@ static void Scl_VMsg(const char *fmt, va_list ap)
 }
 #endif /* SCL_CFG_MSG_EN */
 
+/* ============================ 消息级别（全局，运行期可调） ============================ */
+
+uint8_t SCL_MsgLvl = (uint8_t)SCL_CFG_MSG_LVL;
+
+void SCL_MsgLevelSet(uint8_t lvl)
+{
+    SCL_MsgLvl = lvl;
+}
+
+uint8_t SCL_MsgLevelGet(void)
+{
+    return SCL_MsgLvl;
+}
+
 static void Scl_Msg(const char *fmt, ...)
 {
 #if (SCL_CFG_MSG_EN == 1u)
-    va_list ap;
-    va_start(ap, fmt);
-    Scl_VMsg(fmt, ap);
-    va_end(ap);
+    if (SCL_MsgLvl < (uint8_t)SCL_MSG_INFO) { return; }   /* 运行级门控 */
+    {
+        va_list ap;
+        va_start(ap, fmt);
+        Scl_VMsg(fmt, ap);
+        va_end(ap);
+    }
 #else
     (void)fmt;
 #endif
@@ -814,12 +831,15 @@ static void Scl_Msg(const char *fmt, ...)
 static void Scl_MsgErr(const char *fmt, ...)
 {
 #if (SCL_CFG_MSG_EN == 1u)
-    va_list ap;
-    Scl_Msg("scl: ");
-    va_start(ap, fmt);
-    Scl_VMsg(fmt, ap);
-    va_end(ap);
-    Scl_Msg("\r\n");
+    if (SCL_MsgLvl < (uint8_t)SCL_MSG_ERR) { return; }    /* 错误级门控 */
+    {
+        va_list ap;
+        Scl_Msg("scl: ");
+        va_start(ap, fmt);
+        Scl_VMsg(fmt, ap);
+        va_end(ap);
+        Scl_Msg("\r\n");
+    }
 #else
     (void)fmt;
 #endif
