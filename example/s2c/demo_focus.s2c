@@ -1,0 +1,23 @@
+# 脚本命令演示：focus 高速往返复核（注册为命令行命令 focus）
+# 用法：python tools/scl_emit_c.py example/s2c/demo_focus.s2c -o build/focus_prog.c --name focus --cmd focus
+#       固件：SCL_Init(); <注册 demo 命令>; Scl_Scmd_Register_focus();
+#       命令行输入：focus <pps> <rep>  （注入 arg0/arg1，脚本用别名 pps/rep 读取）
+#       命令名可任取：--cmd 自定；脚本内只依赖 arg0..argN 与 alias
+
+alias pps arg0          # pps = 命令行第 1 参（arg0）
+alias rep arg1          # rep = 命令行第 2 参（arg1）
+
+var int cnt = 0
+var int i   = 0
+
+# 打印收到的参数（别名编译期替换成 arg0/arg1 → 运行时展开）
+echo("pps=${pps}")
+echo("rep=${rep}")
+
+# 用参数做循环（rep 来自 arg1）
+while (i < rep) {
+    i = i + 1
+}
+echo("cnt=${i}")
+
+# 生成器（--cmd）自动在字节码末尾追加 free：本命令引入变量(含 arg*)执行完即释放

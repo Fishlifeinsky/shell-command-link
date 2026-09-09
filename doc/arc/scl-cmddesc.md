@@ -117,3 +117,18 @@ scl: 已注册命令:
   - 参数位（首命令完整且带参数模板）按 Tab 输出该命令 `usage:` 行（不插文本）。
 
 测试：第 9 节新增 `help <cmd>` 8 例；Shell 第 7 节新增 desc 联动 3 例（desc 宏内）。
+
+## 5. 占用说明
+
+`SCL_CFG_CMDDESC_EN` 负责命令描述结构、参数模板校验、usage 输出和 help 关联，
+本身不是默认占用的大头。当前 PC gcc `-O2` 对象级实测中，默认 `scl.c` 的
+`.rdata` 约 5.0 KB；关闭 `SCL_CFG_CMDDESC_EN` 后约减少 0.2 KB `.rdata`、
+1.1 KB `.text`。
+
+约 5 KB 的主要来源是 `SCL_CFG_MSG_EN` 下的内置中文帮助表和错误提示。关闭
+`SCL_CFG_MSG_EN` 后，`scl.c` 的 `.rdata` 约为 0.9 KB，`.text` 约减少 4.9 KB。
+因此量产固件可以保留 `CMDDESC_EN` 提供参数校验，同时关闭 `MSG_EN`；若还使用
+`help` 或串口诊断，则保留 `MSG_EN`。
+
+上述数字来自 PC 编译器，只用于裁剪方向判断；Cortex-M 的最终占用以目标工具链
+和链接 map 为准。完整配置建议见 README 的“占用与裁剪建议”。

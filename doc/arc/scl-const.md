@@ -52,7 +52,33 @@ const RATE = 0b1010           # 省略类型 → 推断 int
 - 链式 `var` 指令解析支持 `const` 前缀；DoFreeRaw/DoArith 写回分别提示。
 - S2C：`const` 入语法字；仅顶层解析为 `constvar` 语句 → 输出 `var const ...`。
 
-## 5. 验证
+## 5. const 折叠：真常量直接放 Flash（v0.3b）
+
+对**固定脚本**（`tools/scl_emit_c.py` 编成 const C 程序 → `SCL_RunProg` 执行，
+见 `scl-const-prog.md`），顶层 `const` 走"真常量"路径：
+
+- 声明 `const int LIM = 5` **不需要 var、不降级为 `var const`**，不产运行指令；
+- 脚本里对 `LIM` 的**读取引用**（算术 `r = LIM + 1`、比较 `r == LIM`、
+  `${LIM}` 参数、字符串常量比较、条件真值等）在 **PC 编译期折叠为字面量**，
+  值直接编进 Flash 的字节码/参数缓存；
+- 运行时**不占变量槽**（`SCL_CFG_VAR_MAX` 不计），没有"建只读变量"这一步。
+
+动态 `SCL_Run`（文本在 MCU 上即时编译）的 `const` 仍是上文的"运行时会话
+只读变量"（`var const`）。两条路径互不影响：`scl_script2chain.translate`
+默认不折叠；`scl_emit_c` 编 Flash 程序时以 `const_fold=True` 折叠。
+
+折叠类型矩阵（混用会编译期报错）：
+| const 类型 | 可折叠语境 |
+|---|---|
+| `int` | 算术/比较操作数、btest 真值、`${}` 参数、int 赋值 |
+| `bool` | 条件真值/`!` 取反、`${}` 参数、bool 赋值 |
+| `flag` | 条件真值(btest)、字符串比较、`${}` 参数 |
+| `string` | 命令参数 `{}`、字符串比较(seq/sneq)、string 赋值 |
+
+限制（编译期报错）：const 值不能引用变量；const 名不可再 `var`/赋值/同名声明；
+string 常量不能参与 int 运算等错配语境会被拦截。
+
+## 6. 验证
 
 `scl_test` 第 10 节（11 用例）：声明+列表标记、`${}` 读取、覆盖拒、写回拒、free 拒、
 普通→const 升级锁定、C API 返回码与清理。基线：scl_test PASS=116 / s2c_test PASS=71。

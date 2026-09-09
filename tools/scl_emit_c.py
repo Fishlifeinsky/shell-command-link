@@ -16,6 +16,9 @@ scl_emit_c.py —— SCL 预编译程序生成器（把脚本"编译成 C"，减
        参数区 = [total][STR 命令名][参数 type 块...]（无需匹配运行时命令注册顺序）
   - label 在编译期回填为绝对字节偏移（运行时不查 label 表）
   - ${name} 变量引用保留在 STR 块原文，运行时展开
+  - const 折叠（v0.3b，仅 .s2c 输入）：顶层 const 声明编译期折叠成字面量，
+    不产 var 指令、不占运行变量槽（SCL_CFG_VAR_MAX 不计）；值直接编进 Flash
+    字节码/参数缓存 —— 即"const 值直接放 Flash"、无需运行时 RAM 变量。
   - type 块：BOOL=01+v | INT=02+4B 大端 | FLAG=03+c | STR=04+len+bytes
   - 保留字（大小写敏感，同 C）：label/jump/var/free/help + iadd..sneq 运算字
 
@@ -38,6 +41,8 @@ T_STR = 0x04
 
 OP_HELP, OP_VAR, OP_FREE, OP_JUMP, OP_JUMPA = 1, 2, 3, 4, 5
 OP_CALLN = 0x28
+OP_CALLF = 0x29   # callf <label>：运行时子程序调用（fn 非内联）
+OP_RETF  = 0x2A   # retf：跳回全局 fn_back
 
 # 内置运算保留字 → opcode（与 scl.c s_opwords[] 顺序/拼写一致，大小写敏感）
 OPWORDS = [
@@ -254,6 +259,16 @@ def encode_chain(chain):
                 raise EncError("jump: 缺少目标 label")
             insts.append({"opc": OP_JUMPA if cond else OP_JUMP, "kind": "jump", "tgt": tgt})
             continue
+        if head == "callf":
+            # callf <名>：目标必须已/将登记 label
+            tgt = raw.strip()
+            if not tgt:
+                raise EncError("callf: 缺少目标 label")
+            insts.append({"opc": OP_CALLF, "kind": "callf", "tgt": tgt})
+            continue
+        if head == "retf":
+            insts.append({"opc": OP_RETF, "kind": "retf"})
+            continue
         opw = None
         for (w, o) in OPWORDS:
             if head == w:
@@ -313,6 +328,13 @@ def encode_chain(chain):
                 cache.extend(b)
             area_close(off)
             aoff = off
+        elif it["kind"] == "callf":
+            tgt = labels.get(it["tgt"])
+            if tgt is None:
+                raise EncError("callf: label '%s' 未定义" % it["tgt"])
+            aoff = tgt
+        elif it["kind"] == "retf":
+            aoff = 0
         else:                          # jump
             tgt = labels.get(it["tgt"])
             if tgt is None:
@@ -329,8 +351,9 @@ def encode_chain(chain):
 
 
 # ---------- C 源生成 ----------
-def emit_c(name, bc, argc, source_note):
-    """生成 C 源文本（数组 + 程序描述）。"""
+def emit_c(name, bc, argc, source_note, cmd=None):
+    """生成 C 源文本（数组 + 程序描述）。
+    cmd 非 None：额外生成脚本命令节点与注册函数（Scl_Scmd_Register_<name>）。"""
     L = []
     L.append("/* ===============================================================")
     L.append(" * SCL 预编译只读程序：%s（由 tools/scl_emit_c.py 生成，勿手改）" % name)
@@ -361,6 +384,17 @@ def emit_c(name, bc, argc, source_note):
     L.append("    scl_%s_bc,  (uint16_t)sizeof(scl_%s_bc)," % (name, name))
     L.append("    scl_%s_argc, (uint16_t)sizeof(scl_%s_argc)" % (name, name))
     L.append("};")
+    if cmd:
+        L.append("")
+        L.append("/* ============ 脚本命令：注册为命令行命令 '%s'（SCL_Scmd） ============ */" % cmd)
+        L.append("/* 用法：SCL_Init(); <注册业务命令>; Scl_Scmd_Register_%s();" % name)
+        L.append(" *      之后命令行输入：%s 参数... （注入 arg0..argN，执行本脚本；见 scl.h）" % cmd)
+        L.append(" *      程序尾部已含 free：执行完自动释放本命令引入的变量（含 arg*） */")
+        L.append("static scl_scmd_t s_scmd_%s = { \"%s\", &scl_%s_prog, NULL };" % (name, cmd, name))
+        L.append("void Scl_Scmd_Register_%s(void)" % name)
+        L.append("{")
+        L.append("    SCL_Scmd_Register(&s_scmd_%s);" % name)
+        L.append("}")
     L.append("")
     return "\n".join(L)
 
@@ -373,6 +407,9 @@ def main(argv=None):
     ap.add_argument("--name", default=None, help="生成标识名（缺省取输入文件名去扩展）")
     ap.add_argument("--chain", action="store_true",
                     help="输入已是指令链文本（跳过现代语法解析）")
+    ap.add_argument("--cmd", default=None,
+                    help="生成脚本命令注册（命令名，如 focus）：尾部加 free、输出 scmd 节点与 "
+                         "Scl_Scmd_Register_<name>()；命令行输入 '<cmd> 参数...' 直接执行本脚本")
     # 现代语法解析参数（对齐 scl_script2chain.translate）
     ap.add_argument("--ret-setter", default="setret")
     ap.add_argument("--var-max", type=int, default=4)
@@ -392,9 +429,11 @@ def main(argv=None):
         note = "%s (指令链文本)" % args.input
     else:
         try:
+            # const_fold=True：顶层 const 折叠为编译期字面量（不产 var const 指令、
+            # 不占 RAM 变量槽；引用处直接编进 Flash 字节码/参数缓存）
             chain, warns = translate(src, ret_setter=args.ret_setter,
                                      var_max=args.var_max, name_max=args.name_max,
-                                     value_max=args.value_max)
+                                     value_max=args.value_max, const_fold=True)
         except S2CError as e:
             loc = ("%s:%d:%d: " % (args.input, e.line, e.col)) if e.line else ""
             print("emit-c: %serror: %s" % (loc, e.msg), file=sys.stderr)
@@ -414,7 +453,12 @@ def main(argv=None):
     else:
         base = os.path.basename(args.input)
         name = "".join(ch for ch in base.split(".")[0] if ch.isalnum() or ch == "_") or "prog"
-    text = emit_c(name, bc, argc, note)
+
+    cmd = args.cmd
+    if cmd is not None:
+        # 脚本命令：字节码末尾追加一条无参 free（执行完自动释放 arg* 与本命令变量）
+        bc = bc + [0x00, META_OPC["free"] & 0xFF, 0x00, 0x00]
+    text = emit_c(name, bc, argc, note, cmd=cmd)
 
     if args.output:
         try:

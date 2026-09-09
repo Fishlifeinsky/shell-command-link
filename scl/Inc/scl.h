@@ -118,6 +118,33 @@ typedef struct scl_prog
     uint16_t       arg_len;  /* 参数字节缓存字节数 */
 } scl_prog_t;
 
+#if ((SCL_CFG_SCMD_EN != 0u) && (SCL_CFG_RUN_PROG_EN != 0u))
+/**
+  * @brief  脚本命令：把 s2c 编译产物（const 程序）注册成命令行可直接调用的命令。
+  * @note   调用形态：仅整行顶层（命令行输入 `name 参数...`，SCL 空闲时）执行；
+  *         运行时把参数按位置注入为变量 arg0..argN（上限 SCL_CFG_VAR_MAX），
+  *         再 SCL_RunProg() 跑该脚本；脚本里用 ${arg0}..（可 alias 起名）读取。
+  *         生成器 tools/scl_emit_c.py --cmd <name> 会输出节点与注册函数。
+  * @see    doc/arc/scl-scmd.md
+  */
+typedef struct scl_scmd
+{
+    const char       *name;   /* 命令名（命令行输入；不能为保留关键字） */
+    const scl_prog_t *prog;   /* 预编译 const 程序（生成器产物） */
+    struct scl_scmd  *next;   /* 链表（SCL_Scmd_Register 维护） */
+} scl_scmd_t;
+
+void SCL_Scmd_Register(scl_scmd_t *cmd);
+const scl_scmd_t *SCL_Scmd_Find(const char *name);
+const scl_scmd_t *SCL_Scmd_Head(void);
+/**
+  * @brief  执行一行 'name 参数...'（脚本命令入口）
+  * @retval 1=已接受并置忙；0=busy 拒/参数非法；2=命令名不是脚本命令（可回退 SCL_Run）
+  * @note   参数注入 arg0.. 后 SCL_RunProg；busy 时沿用拒绝语义
+  */
+uint8_t SCL_Scmd_RunText(const char *line);
+#endif
+
 /* ============================ 生命周期 ============================ */
 
 /**

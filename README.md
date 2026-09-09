@@ -42,6 +42,29 @@
 - **异步/跨主循环步进**：命令可带同步信号回调，适配"命令耗时等待硬件"
 - 一条 `SCL_Run` + 主循环周期调 `SCL_Loop()` 即可驱动
 
+## 占用与裁剪建议
+
+按当前默认配置用 gcc `-O2` 编译 `scl.c`、`scl_var.c`、`scl_env.c` 的对象文件，
+SCL 核心约为：代码 `.text` 22.4 KB、只读数据 `.rdata` 5.0 KB、静态 RAM `.bss`
+约 2.1 KB。该结果是 PC 编译器口径，Cortex-M 的 Thumb-2 结果应以目标工具链为准。
+
+其中约 5 KB 的只读数据主要是 `SCL_CFG_MSG_EN` 打开的中文帮助文档和错误提示，
+不是每条命令的描述本身。实测只关闭 `SCL_CFG_MSG_EN` 后，`scl.c` 的 `.rdata`
+从约 5.0 KB 降到约 0.9 KB，`.text` 也从约 18.6 KB 降到约 13.7 KB；只关闭
+`SCL_CFG_CMDDESC_EN` 只减少约 0.2 KB `.rdata` 和约 1.1 KB `.text`。
+
+固定脚本的量产配置建议使用预编译程序：
+
+```text
+-DSCL_CFG_RUN_TEXT_EN=0   # 去掉 MCU 端动态文本编译器
+-DSCL_CFG_MSG_EN=0        # 去掉 help/错误输出及其中文字符串
+-DSCL_CFG_ENV_EN=0        # 不需要持久环境变量时关闭
+-DSCL_CFG_SCMD_EN=0       # 不使用脚本注册命令时关闭
+```
+
+该最小配置只保留 `SCL_RunProg()` 解释器，PC 对象级实测 `scl.c` 约为 `.text`
+8.2 KB、`.rdata` 0.3 KB、`.bss` 0.6 KB；最终 Flash/RAM 仍应以 MCU 链接地图为准。
+
 ## 文档
 
 | 文档 | 内容 |

@@ -1,0 +1,67 @@
+# =============================================================================
+# profile.s2c —— 温循档位（作为脚本命令：命令行输入 profile <档号>）
+#   档号经 arg0 注入，alias idx 起名；when 按档号选曲线。
+#   展示：alias(arg0) / const 曲线常量 / fn(参数内联) / when 分支 /
+#         while(!is_warm) 等温 / soak 异步保温。
+#   温控策略交给业务命令 pwm_calc()（比例占空），脚本只管"升温→保温"语义。
+# =============================================================================
+
+# ---- 曲线常量（℃ / tick；常量名 ≤8 字符） ----
+const int P0_TEMP   = 60    # 恒温档温度
+const int P0_KEEP   = 10    # 恒温保持 tick
+const int P1_HI     = 85    # 循环档高温
+const int P1_LO     = 45    # 循环档低温
+const int P1_HOLD   = 8     # 各温保持 tick
+const int P2_TEMP   = 50    # 烘干档温度
+const int P2_KEEP   = 6
+
+alias idx arg0              # idx = 命令行第 1 参（档号）
+
+# 把注入参数规范为本地显式 int（运行时比较/分支用变量更稳）
+var int p = ${idx}
+
+# ---- 基础动作：升温到位 → 保温 ----
+# fn 编译期内联：seg(60,10) 展开为下述序列（60/10 是调用处字面实参）
+# warm_to = 上电并以 100% 占空同步加热到目标（命令内部完成，脚本语义清晰）
+fn seg(setT, keep) {
+    warm_to(setT)
+    soak(keep)
+}
+
+# ---- 三档曲线 ----
+fn run_p0() {
+    b_echo("curve 0: 恒温老化")
+    seg(${P0_TEMP}, ${P0_KEEP})
+}
+
+fn run_p1() {
+    b_echo("curve 1: 高温循环")
+    seg(${P1_HI}, ${P1_HOLD})
+    seg(${P1_LO}, ${P1_HOLD})
+    seg(${P1_HI}, ${P1_HOLD})
+}
+
+fn run_p2() {
+    b_echo("curve 2: 低温烘干")
+    seg(${P2_TEMP}, ${P2_KEEP})
+}
+
+# ================= 主体 =================
+about()
+power("on")
+fan("on")
+door("close")
+
+when (p) {          # 主语用本地显式 int 变量 p（承接命令行档号）
+    0 -> run_p0()
+    1 -> run_p1()
+    2 -> run_p2()
+    else -> b_echo("profile: 档号越界 (0..2)")
+}
+
+# 结束：停加热，风扇再转一会儿散热
+heat(0)
+soak(3)
+power("off")
+led("off")
+b_echo("profile done")

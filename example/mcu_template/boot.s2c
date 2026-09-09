@@ -4,6 +4,8 @@
 # 注意：同时存活的变量数受工具预算限制（默认 4，可用 --var-max 调大，见 scl_emit_c 帮助）
 
 # 只读常量（顶层；也可写 var const）
+# 编译成 Flash const 程序时（scl_emit_c）const 折叠为编译期字面量：
+#   不产 var 指令、不占 RAM 变量槽，值直接进 Flash。下面的 LIM 会内联到 r=LIM+1
 const int LIM = 5
 
 var int r = 0

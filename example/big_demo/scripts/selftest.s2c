@@ -1,0 +1,88 @@
+# =============================================================================
+# selftest.s2c —— 开机自检（老化炉 + 电机 + IO）
+#   作为脚本命令注册：命令行输入 selftest 即执行整段自检。
+#   展示：常量 / 变量 / 条件分支 / 命令条件返回值 / 表达式统计。
+#   统计口径：每检查项先 checks+1，判定通过才 ok+1 → 末尾 checks==ok 才 OK。
+# =============================================================================
+
+# ---- 常量：行程 / 速率（编译期折叠进 Flash，不占变量槽） ----
+const int STROKE = 200
+const int SPEED  = 80
+
+# ---- 变量：自检计数（脚本自由变量，命令执行完 free 释放） ----
+var int checks = 0
+var int ok     = 0
+
+# ================= 1. 标题 =================
+about()
+
+# ================= 2. 上电置位 =================
+led("off")
+door("close")        # 关门 → 门限位 door_io=1
+fan("on")            # 开风机
+relay(0, "on")       # 吸合 0 号继电器
+
+# ================= 3. IO 回读断言（3 项） =================
+checks = checks + 1
+if (door_closed()) {
+    ok = ok + 1
+} else {
+    b_echo("selftest NG: door 未到位")
+}
+
+checks = checks + 1
+if (is_fan()) {
+    ok = ok + 1
+} else {
+    b_echo("selftest NG: fan 未开")
+}
+
+checks = checks + 1
+if (rly(0)) {
+    ok = ok + 1
+} else {
+    b_echo("selftest NG: relay0 off")
+}
+
+# ================= 4. 电机自检（3 项） =================
+m_pps(${SPEED})
+
+# 4a 回零（异步命令：库自动等待到位后才继续下一条）
+m_home()
+checks = checks + 1
+if (m_busy()) {
+    b_echo("selftest NG: home 未完成")
+} else {
+    ok = ok + 1
+}
+
+# 4b 正走 STROKE
+m_rel(${STROKE})
+checks = checks + 1
+if (m_busy()) {
+    b_echo("selftest NG: 正走未完成")
+} else {
+    ok = ok + 1
+}
+
+# 4c 归零
+m_abs(0)
+checks = checks + 1
+if (m_busy()) {
+    b_echo("selftest NG: 归零未完成")
+} else {
+    ok = ok + 1
+}
+
+m_pos()
+
+# ================= 5. 汇总 =================
+if (checks == ok) {
+    b_echo("selftest OK  (ok=", ${ok}, "/", ${checks}, ")")
+    led("on")
+    buzz(3)
+} else {
+    b_echo("selftest NG  (ok=", ${ok}, "/", ${checks}, ")")
+    led("blink")
+}
+diag_all()

@@ -9,7 +9,9 @@
   *                var/free/help   内置命令
   *                label <名>      设置跳转点（不产字节）
   *                jump [-a] <名>  -b/默认=无条件跳；-a=G_RETURN 为真才跳(读后清零)
-  *              运行时不再提供 if/while 文本（由上层编译器降级为 label/jump）
+  *                callf <名>      运行时子程序调用：保存返回点(下一条)到 fn_back 再跳
+  *                retf            子程序返回：无条件跳回 fn_back（v0.3d 单层，无嵌套）
+  *              运行时不再提供 if/while 文本（由上层编译器降级为 label/jump/callf/retf）
   *            - SCL_Run() 把文本**编译成字节码**后立即返回并置 busy：
   *                每条指令固定 4 字节 = opc(2B,大端) + argOff(2B,大端)
   *                参数写入"参数字节缓存"并**同步解析成类型块**（type 开头，无空格）：
@@ -17,7 +19,7 @@
   *                元指令（var/free/help/label/jump）参数按整段 STR 块存原文内部解析；
   *                业务命令/运算指令参数按字面量类型化；无参 argOff=0（保留缓存第 0 字节）
   *                label → 登记到 label 表 (名 → 下一条指令字节偏移)
-  *                jump  → 编译期把名解析为目标偏移写入 argOff 槽
+  *                jump/callf → 编译期把名解析为目标偏移写入 argOff 槽；retf 无参
   *            - 命令在 SCL_RegisterCmd() 时自动分配 opcode（自 0x0100 起）
   *            - 变量类型化：bool/int/flag/string，槽存 type + 规范化文本（见 scl.h）
   *            - 内置 int/bool 运算指令（保留关键字，见 scl.h 注释）
@@ -102,6 +104,10 @@ enum
        用于 SCL_RunProg 的 Flash 只读程序，免依赖运行时命令注册顺序） */
     SCL_OP_CALLN = 0x0028u,
 
+    /* v0.3d：运行时子程序（S2C fn 非内联）——全局 fn_back 保存单层返回点，无嵌套/递归 */
+    SCL_OP_CALLF = 0x0029u,   /* callf <label>：保存返回点(下一条)到 fn_back，跳转到 label */
+    SCL_OP_RETF  = 0x002Au,   /* retf：无条件跳回 fn_back（aoff 忽略） */
+
     SCL_OP_CMD_BASE = 0x0100u  /* 注册命令 opcode 起点（自动递增） */
 };
 
@@ -112,6 +118,11 @@ static uint8_t s_inited = 0u;      /* 首次自动初始化标记 */
 /* ---- 命令链表（注册即自动分配 opcode） ---- */
 static scl_cmd_t *s_cmd_head = NULL;
 static uint16_t  s_next_opc  = (uint16_t)SCL_OP_CMD_BASE;
+
+#if ((SCL_CFG_SCMD_EN != 0u) && (SCL_CFG_RUN_PROG_EN != 0u))
+/* ---- 脚本命令链表（s2c 编译产物注册成命令，SCL_Scmd_*） ---- */
+static scl_scmd_t *s_scmd_head = NULL;
+#endif
 
 
 /* ---- 当前执行程序：bc/argc 只读访问（可指向 RAM 动态编译产物，或 Flash const 预编译程序）。
@@ -124,6 +135,7 @@ static uint8_t  s_bc[SCL_CFG_BC_MAX];       /* 每条指令 4 字节 */
 static uint16_t s_bc_len = 0u;              /* 有效字节数（4 的倍数） */
 #endif
 static uint16_t s_pc     = 0u;              /* 程序计数器（解释执行） */
+static uint16_t s_fn_back = 0u;             /* 运行时子程序返回点（callf 保存 / retf 跳回） */
 static uint32_t s_steps  = 0u;              /* 本脚本已执行步数（步进保护） */
 
 #if (SCL_CFG_RUN_TEXT_EN != 0u)
@@ -1257,6 +1269,50 @@ static uint8_t Scl_Compile(const char *script)
             }
             opc = (cond != 0u) ? SCL_OP_JUMPA : SCL_OP_JUMP;
         }
+        else if ((cl.hlen == 5u) && Scl_EqN(cl.hs, "callf", 5u))
+        {
+            /* callf <label>：运行时子程序调用——保存返回点再跳转（fn 非内联） */
+            const char *w  = cl.rs;
+            const char *tgt;
+            uint16_t tlen;
+            uint16_t k;
+            uint8_t  found = 0u;
+
+            while ((w < cl.re) && !Scl_IsSp(*w)) { w++; }
+            tgt  = cl.rs;
+            tlen = (uint16_t)(w - cl.rs);
+            if (tlen == 0u)
+            {
+                Scl_MsgErr("callf: 缺少目标 label");
+                return 0u;
+            }
+            for (k = 0u; k < s_label_cnt; k++)
+            {
+                if ((Scl_StrLen(s_labels[k].name) == tlen) &&
+                    Scl_EqN(s_labels[k].name, tgt, tlen))
+                {
+                    aoff = s_labels[k].off;
+                    found = 1u;
+                    break;
+                }
+            }
+            if (found == 0u)
+            {
+                char nbuf[SCL_CFG_LABEL_NAME_MAX + 1u];
+                uint16_t nn = (tlen < SCL_CFG_LABEL_NAME_MAX) ?
+                              tlen : SCL_CFG_LABEL_NAME_MAX;
+                uint16_t k2;
+                for (k2 = 0u; k2 < nn; k2++) { nbuf[k2] = tgt[k2]; }
+                nbuf[nn] = '\0';
+                Scl_MsgErr("callf: label '%s' 未定义", nbuf);
+                return 0u;
+            }
+            opc = SCL_OP_CALLF;
+        }
+        else if ((cl.hlen == 4u) && Scl_EqN(cl.hs, "retf", 4u))
+        {
+            opc = SCL_OP_RETF;   /* 无参：aoff=0 */
+        }
         else
         {
             /* 内置运算指令 / 内置元命令 / 注册命令 */
@@ -2118,6 +2174,27 @@ static void Scl_StepOnce(void)
         }
         return;
 
+    case SCL_OP_CALLF:
+        if (aoff >= s_prog.bc_len)
+        {
+            Scl_MsgErr("callf: 目标越界");
+            Scl_Finish(1);
+            return;
+        }
+        s_fn_back = next;      /* 保存返回点（下一条指令偏移） */
+        s_pc = aoff;
+        return;
+
+    case SCL_OP_RETF:
+        if ((s_fn_back == 0u) || (s_fn_back >= s_prog.bc_len))
+        {
+            Scl_MsgErr("retf: 无有效返回点（fn_back 未设置）");
+            Scl_Finish(1);
+            return;
+        }
+        s_pc = s_fn_back;      /* 跳回调用处之后 */
+        return;
+
     case SCL_OP_HELP:
 #if (SCL_CFG_MSG_EN == 1u)
         Scl_DoHelpRaw(Scl_ArgLoad(aoff));   /* help [cmd]：空=全览; 带名=单命令明细 */
@@ -2222,10 +2299,14 @@ void SCL_Init(void)
 {
     s_cmd_head  = NULL;
     s_next_opc  = (uint16_t)SCL_OP_CMD_BASE;
+#if ((SCL_CFG_SCMD_EN != 0u) && (SCL_CFG_RUN_PROG_EN != 0u))
+    s_scmd_head = NULL;
+#endif
     s_busy      = 0u;
     s_abort     = 0u;
     s_wait_cmd  = NULL;
     s_pc        = 0u;
+    s_fn_back   = 0u;
     s_prog.bc   = NULL;
     s_prog.bc_len = 0u;
     s_prog.argc = NULL;
@@ -2291,6 +2372,7 @@ uint8_t SCL_Run(const char *script)
 
     /* 启动执行 */
     s_pc      = 0u;
+    s_fn_back = 0u;
     s_steps   = 0u;
     s_wait_cmd = NULL;
     s_abort   = 0u;
@@ -2326,6 +2408,7 @@ uint8_t SCL_RunProg(const scl_prog_t *prog)
 
     /* 启动执行 */
     s_pc      = 0u;
+    s_fn_back = 0u;
     s_steps   = 0u;
     s_wait_cmd = NULL;
     s_abort   = 0u;
@@ -2382,3 +2465,143 @@ void SCL_Abort(void)
 {
     s_abort = 1u;
 }
+
+/* ============================ 脚本命令（s2c 编译产物注册成命令） ============================ */
+
+#if ((SCL_CFG_SCMD_EN != 0u) && (SCL_CFG_RUN_PROG_EN != 0u))
+
+void SCL_Scmd_Register(scl_scmd_t *cmd)
+{
+    if ((cmd == NULL) || (cmd->name == NULL) || (cmd->prog == NULL))
+    {
+        return;
+    }
+    cmd->next = s_scmd_head;
+    s_scmd_head = cmd;
+}
+
+const scl_scmd_t *SCL_Scmd_Find(const char *name)
+{
+    scl_scmd_t *p;
+    if (name == NULL)
+    {
+        return NULL;
+    }
+    for (p = s_scmd_head; p != NULL; p = p->next)
+    {
+        if (Scl_StrEq(p->name, name))
+        {
+            return p;
+        }
+    }
+    return NULL;
+}
+
+/* 头遍历（供 help/补全展示；NULL 表示空） */
+const scl_scmd_t *SCL_Scmd_Head(void)
+{
+    return s_scmd_head;
+}
+
+/* 格式化 "arg<n>" 变量名到 buf（idx < 1000） */
+static void Scl_Scmd_ArgName(uint16_t idx, char *buf)
+{
+    uint16_t p = 3u;
+    buf[0] = 'a'; buf[1] = 'r'; buf[2] = 'g';
+    if (idx >= 100u) { buf[p++] = (char)('0' + (idx / 100u)); }
+    if (idx >= 10u)  { buf[p++] = (char)('0' + ((idx / 10u) % 10u)); }
+    buf[p++] = (char)('0' + (idx % 10u));
+    buf[p] = '\0';
+}
+
+/* 执行一行 'name 参数...'：注入 argv 为 arg0..argN，再 SCL_RunProg。 */
+uint8_t SCL_Scmd_RunText(const char *line)
+{
+    const scl_scmd_t *sc;
+    const char *p;
+    char  name[SCL_CFG_ARG_LEN_MAX];
+    char  anm[SCL_CFG_VAR_NAME_MAX + 1u];
+    char  abuf[SCL_CFG_ARG_LEN_MAX];
+    uint16_t k;
+    int   ai;
+
+    if (s_inited == 0u)
+    {
+        SCL_Init();
+    }
+    if (line == NULL)
+    {
+        return 0u;
+    }
+    p = line;
+    while ((*p != '\0') && Scl_IsSp(*p)) { p++; }
+    if (*p == '\0') { return 0u; }
+    k = 0u;
+    while ((*p != '\0') && !Scl_IsSp(*p) && (k + 1u < (uint16_t)sizeof(name)))
+    {
+        name[k++] = *p++;
+    }
+    name[k] = '\0';
+
+    sc = SCL_Scmd_Find(name);
+    if (sc == NULL)
+    {
+        return 2u;                 /* 非脚本命令 → 调用方回退普通 SCL_Run */
+    }
+    if (s_busy != 0u)
+    {
+        Scl_MsgErr("busy: 有脚本正在执行");
+        return 0u;
+    }
+
+    ai = 0;
+    for (;;)
+    {
+        const char *seg;
+        const char *segend;
+        char q;
+        int  isq;
+
+        while ((*p != '\0') && Scl_IsSp(*p)) { p++; }
+        if (*p == '\0') { break; }
+        if (ai >= (int)SCL_CFG_VAR_MAX)
+        {
+            Scl_MsgErr("脚本命令参数过多（上限 SCL_CFG_VAR_MAX=%u）", SCL_CFG_VAR_MAX);
+            break;
+        }
+        isq = 0;
+        q = '\0';
+        if ((*p == '"') || (*p == '\''))
+        {
+            q  = *p;
+            p++;
+            isq = 1;
+        }
+        seg = p;
+        if (isq != 0)
+        {
+            while ((*p != '\0') && (*p != q)) { p++; }
+            segend = p;
+            if (*p == q) { p++; }          /* 越过闭合引号 */
+        }
+        else
+        {
+            while ((*p != '\0') && !Scl_IsSp(*p)) { p++; }
+            segend = p;
+        }
+        /* 参数段 [seg, segend) → ${} 展开 → arg<ai> 注入 */
+        if (Scl_ExpandCopy(seg, segend, abuf, (uint16_t)sizeof(abuf)) < 0)
+        {
+            abuf[0] = '\0';
+        }
+        Scl_Scmd_ArgName((uint16_t)ai, anm);
+        if (SCL_VarSet(anm, abuf) != 0)
+        {
+            Scl_MsgErr("scmd: 注入参数变量 %s 失败（类型/超长/槽满）", anm);
+        }
+        ai++;
+    }
+    return SCL_RunProg(sc->prog);
+}
+
+#endif /* SCL_CFG_SCMD_EN && SCL_CFG_RUN_PROG_EN */

@@ -119,6 +119,21 @@ def test_unit():
                'echo "p q" 2',
                "fn 参数内联")
 
+    # v0.3d：fn 运行时子程序（无参 + 体>3 + 调用>3 → callf/retf，体末尾唯一一份）
+    unit_exact("var int t=0\nfn big(){ echo(\"a\")\n echo(\"b\")\n echo(\"c\")\n echo(\"d\")\n t = t + 1 }\n"
+               "big()\nbig()\nbig()\nbig()\necho(\"t=${t}\")",
+               "var int t=0;callf L1;callf L1;callf L1;callf L1;echo t=${t};"
+               "label L1;echo a;echo b;echo c;echo d;iadd t 1 t;retf",
+               "fn 无参 体>3 且调用>3 → 转 callf/retf（体只存一份）")
+    unit_exact("fn small(){ echo(x) }\nsmall()\nsmall()\nsmall()\nsmall()",
+               "echo x;echo x;echo x;echo x",
+               "fn 体≤3 → 即使调用4次仍内联")
+    unit_exact("fn note(x,y){ echo(\"A\")\n echo(\"B\")\n echo(\"C\")\n echo(\"D\")\n echo(x,y) }\n"
+               "note(1,2)\nnote(3,4)",
+               "echo A;echo B;echo C;echo D;echo 1 2;"
+               "echo A;echo B;echo C;echo D;echo 3 4",
+               "fn 带参 体>3 → 恒内联（参数需克隆替换）")
+
     # 赋值 / 取负 / 拷贝
     unit_exact("var int x = 10\nx = x / 2\necho(x)",
                "var int x=10;idiv x 2 x;echo x",
@@ -159,6 +174,83 @@ def unit_err(src, keyword, msg):
         check(False, "%s -> 未报错（期望含 %s）" % (msg, keyword))
     except S2CError as e:
         check(keyword in e.msg, "%s -> %s" % (msg, e.msg))
+
+
+def test_const_fold():
+    section("1b. const 折叠（const_fold=True，预编译 Flash 程序）")
+
+    def fold(src, expect, msg):
+        try:
+            chain, _ = translate(src, const_fold=True)
+            check(chain == expect, "%s\n       got: %s\n       exp: %s" %
+                  (msg, chain, expect))
+        except S2CError as e:
+            check(False, "%s -> 意外报错: %s" % (msg, e.msg))
+
+    def fold_err(src, keyword, msg):
+        try:
+            translate(src, const_fold=True)
+            check(False, "%s -> 未报错（期望含 %s）" % (msg, keyword))
+        except S2CError as e:
+            check(keyword in e.msg, "%s -> %s" % (msg, e.msg))
+
+    # const 声明不产 var 指令；所有读取引用折叠为字面量（值随字节码进 Flash）
+    fold("const int LIM=5\nvar int r=0\nr = LIM + 1\n",
+         "var int r=0;iadd 5 1 r", "const int 折叠进算术")
+    fold("const int LIM=5\nvar int r=0\nif (r == LIM) { echo(y) } else { echo(n) }\n",
+         "var int r=0;ieq r 5;jump -a L1;echo n;jump L2;label L1;echo y;label L2",
+         "const int 折叠进比较")
+    fold('const int LIM=5\necho("L=${LIM}")\n', "echo L=5",
+         "const int 折叠进 ${} 参数")
+    fold('const string TAG=SCL\nvar string s=idle\n'
+         'if (s == TAG) { echo(y) } else { echo(n) }\n',
+         "var string s=idle;seq ${s} SCL;jump -a L1;echo n;jump L2;label L1;"
+         "echo y;label L2", "const string 折叠进字符串比较")
+    fold("const bool DBG=true\nif (DBG) { echo(on) } else { echo(off) }\n",
+         "setret 1;jump -a L1;echo off;jump L2;label L1;echo on;label L2",
+         "const bool 折叠为条件真值")
+    fold("const int N=3\nvar int i=0\nwhile (i < N) { i = i + 1 }\necho(done)\n",
+         "var int i=0;label L1;ilt i 3;jump -a L2;jump L3;label L2;"
+         "iadd i 1 i;jump L1;label L3;echo done", "const int 折叠进 while 条件")
+
+    # const 是编译期常量：不占变量槽、不可变、类型不可错配
+    fold_err("var int B=1\nconst int A=${B}\necho(x)\n", "不能引用变量",
+             "const 值引用变量报错")
+    fold_err("const int LIM=5\nLIM = 3\n", "不可赋值", "对 const 赋值报错")
+    fold_err("const int LIM=5\nvar int LIM=3\n", "不可重新", "const 再 var 声明报错")
+    fold_err('const string S=abc\nvar int r=0\nr = S + 1\n', "int 运算",
+             "string 常量入 int 运算报错")
+
+
+def test_alias():
+    section("1c. alias 编译期别名替换（引用处替换成目标）")
+
+    def f(src, exp, msg):
+        try:
+            chain, _ = translate(src, const_fold=True)
+            check(chain == exp, "%s\n       got: %s\n       exp: %s" %
+                  (msg, chain, exp))
+        except S2CError as e:
+            check(False, "%s -> 意外报错: %s" % (msg, e.msg))
+
+    def fe(src, keyword, msg):
+        try:
+            translate(src, const_fold=True)
+            check(False, "%s -> 未报错（期望含 %s）" % (msg, keyword))
+        except S2CError as e:
+            check(keyword in e.msg, "%s -> %s" % (msg, e.msg))
+
+    f("alias pps arg0\nvar int x=0\nx = pps + 1\n",
+      "var int x=0;iadd arg0 1 x", "alias 算术引用替换")
+    f("alias a arg0\nalias b a\necho(${b})\n", "echo ${arg0}", "alias 链式替换")
+    f("alias pps arg0\necho(\"x=${pps}\")\n", "echo x=${arg0}",
+      "alias ${} 参数替换")
+    f("const int LIM=5\nalias M LIM\nvar int r=0\nr = M + 1\necho(${M})\n",
+      "var int r=0;iadd 5 1 r;echo 5", "alias 指向 const → 折叠")
+    fe("alias x x\n", "指向自己", "别名自引用报错")
+    fe("alias x arg0\nalias x arg1\n", "重复定义", "别名重复报错")
+    fe("alias pps arg0\nvar int pps=1\n", "别名同名", "别名后同 var 名报错")
+    fe("var int A=1\nalias A arg0\n", "同名", "alias 与已声明变量同名报错")
 
 
 def test_error():
@@ -342,6 +434,11 @@ def test_emitc():
         ("constst", None,
          "const int LIM=5\nvar int r=0\nr = LIM + 1\necho(\"r=${r} L=${LIM}\")",
          ["echo r=6 L=5", "RUN-OK"]),
+        # v0.3d：fn 运行时子程序 → const C 预编译（encode_chain 的 callf 回填）
+        ("fnrt", None,
+         "var int t=0\nfn big(){\n echo(\"a\")\n echo(\"b\")\n echo(\"c\")\n echo(\"d\")\n t = t + 1\n}\n"
+         "big()\nbig()\nbig()\nbig()\necho(\"t=${t}\")",
+         ["echo a", "echo b", "echo d", "echo t=4", "RUN-OK"]),
     ]
     for tag, _p, src, subs in cases:
         try:
@@ -389,6 +486,86 @@ def test_emitc():
                   "emit-c %s [%s] %s%s" %
                   (tag, exe_name, "OK" if not miss else "FAIL",
                    (" missing=%s" % miss) if miss else ""))
+
+
+# ---------- 5. 脚本命令（scl_emit_c --cmd + SCL_Scmd_RunText，命令行直接调） ----------
+
+SCMD_MAIN = r'''
+#include <stdio.h>
+#include "scl.h"
+#include "scl_port.h"
+#include "demo_cmds.h"
+extern void Scl_Scmd_Register_focus(void);
+int main(void)
+{
+    uint8_t r1, r2, r3;
+    SCL_Init();
+    Scl_Demo_Register();
+    Scl_Scmd_Register_focus();
+    r1 = SCL_Scmd_RunText("focus 512 3");
+    printf("[A=%u]\n", (unsigned)r1);
+    r2 = SCL_Scmd_RunText("focus 9 9");   /* busy 中再调 → 0 */
+    printf("[B=%u]\n", (unsigned)r2);
+    while (!SCL_Idle()) { SCL_Loop(); }
+    r3 = SCL_Scmd_RunText("nosuchcmd 1");
+    printf("[C=%u]\n", (unsigned)r3);     /* 未知命令名 → 2 */
+    SCL_Scmd_RunText("focus 2 1");
+    while (!SCL_Idle()) { SCL_Loop(); }
+    printf("[END]\n");
+    return 0;
+}
+'''
+
+
+def test_scmd():
+    section("5. 脚本命令（scl_emit_c --cmd + SCL_Scmd_RunText 命令行调用）")
+    try:
+        import scl_emit_c as ec
+    except Exception as e:  # noqa: BLE001
+        check(False, "import scl_emit_c 失败: %s" % e)
+        return
+    src = ("alias pps arg0\nalias rep arg1\nvar int i=0\n"
+           "echo(\"pps=${pps} rep=${rep}\")\n"
+           "while (i < rep) { i = i + 1 }\n"
+           "echo(\"cnt=${i}\")\n")
+    try:
+        chain, _ = translate(src, const_fold=True)
+        bc, argc = ec.encode_chain(chain)
+        bc = bc + [0x00, ec.META_OPC["free"] & 0xFF, 0x00, 0x00]  # 尾部 free
+        ctext = ec.emit_c("focus", bc, argc, "scmd test", cmd="focus")
+    except Exception as e:  # noqa: BLE001
+        check(False, "scmd 生成失败: %s" % e)
+        return
+    (ROOT / "build" / "_scmd_focus.c").write_text(ctext, encoding="utf-8")
+    (ROOT / "build" / "_scmd_main.c").write_text(SCMD_MAIN, encoding="utf-8")
+    exe = ROOT / "build" / "_scmd_runner.exe"
+    cmd = ["gcc", "-O2", "-pipe"] + RUNNER_CFG + [
+        "-I", str(ROOT / "scl" / "Inc"), "-I", str(ROOT / "scl" / "Src"),
+        "-I", str(ROOT / "example"),
+        str(ROOT / "scl" / "Src" / "scl.c"),
+        str(ROOT / "scl" / "Src" / "scl_var.c"),
+        str(ROOT / "scl" / "Src" / "scl_env.c"),
+        str(ROOT / "example" / "scl_port.c"),
+        str(ROOT / "example" / "demo_cmds.c"),
+        str(ROOT / "build" / "_scmd_focus.c"),
+        str(ROOT / "build" / "_scmd_main.c"),
+        "-o", str(exe)]
+    r = subprocess.run(cmd, capture_output=True)
+    if r.returncode != 0:
+        err = (r.stderr.decode("utf-8", "replace").splitlines() or [""])[0]
+        check(False, "scmd runner 编译失败: %s" % err)
+        return
+    try:
+        rr = subprocess.run([str(exe)], capture_output=True, timeout=60)
+        out = (rr.stdout + rr.stderr).decode("utf-8", "replace")
+    except OSError:
+        out = ""
+    subs = ["pps=512 rep=3", "cnt=3", "[A=1]", "[B=0]", "[C=2]",
+            "pps=2 rep=1", "cnt=1", "[END]"]
+    miss = [s for s in subs if s not in out]
+    check(not miss, "scmd 端到端 %s%s" %
+          ("OK" if not miss else "FAIL",
+           (" missing=%s" % miss) if miss else ""))
 
 
 def test_feed():
@@ -468,6 +645,10 @@ def test_feed():
         ("wheng", "var int a=3\nvar int b=0\n"
                   "when { a > 3 -> echo(big); b == 0 -> echo(zero); else -> echo(rest) }\necho(end)",
          ["echo zero", "echo end", "RUN-OK"]),
+        # v0.3d：fn 运行时子程序真实执行（callf/retf 动态 SCL_Run）
+        ("fnrt", "var int t=0\nfn big(){\n echo(\"a\")\n echo(\"b\")\n echo(\"c\")\n echo(\"d\")\n t = t + 1\n}\n"
+                  "big()\nbig()\nbig()\nbig()\necho(\"t=${t}\")",
+         ["echo a", "echo b", "echo d", "echo t=4", "RUN-OK"]),
     ]
     for tag, src, subs in feeds:
         try:
@@ -485,9 +666,12 @@ def test_feed():
 def main():
     print("=== S2C v0.2 转译器测试（类型化 var + 表达式降级） ===")
     test_unit()
+    test_const_fold()
+    test_alias()
     test_error()
     test_feed()
     test_emitc()
+    test_scmd()
     print("\n===== 汇总 =====")
     print("PASS=%d  FAIL=%d" % (PASS, FAIL))
     return 1 if FAIL else 0

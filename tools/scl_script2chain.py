@@ -33,7 +33,7 @@ import argparse
 
 RESERVED_CMD = {"if", "while", "var", "free", "help", "label", "jump"}  # 运行时/关键字
 SYNTAX_WORDS = {"else", "fn", "ret", "true", "false", "const",
-                "do", "when", "for"}       # 语法字
+                "do", "when", "for", "alias"}   # 语法字
 
 
 # ============================ 错误 ============================
@@ -268,6 +268,10 @@ class Parser:
             if not top:
                 raise S2CError("const 常量声明仅允许顶层", t.line, t.col)
             return self.parse_var(is_const=True, top=top)
+        if kw == "alias":
+            if not top:
+                raise S2CError("alias 别名声明仅允许顶层", t.line, t.col)
+            return self.parse_alias()
         if kw == "free":
             return self.parse_free()
         if kw == "if":
@@ -469,6 +473,23 @@ class Parser:
                 raise S2CError("赋值右值暂不支持函数调用结果", t.line, t.col)
             return ("id", name)
         raise S2CError("赋值右值无法解析 %r" % t.text, t.line, t.col)
+
+    def parse_alias(self):
+        """alias <name> <target>：编译期别名——之后对 name 的引用等价于 target。
+        仅顶层（与 const 一致）。target 可为普通变量/另一别名/const 常量名。"""
+        self.next()   # 消费 alias
+        n = self.cur()
+        if n.kind != "ID":
+            raise S2CError("alias 后需要别名（identifier）", n.line, n.col)
+        name = n.text
+        self.next()
+        self.skip_nl()
+        t = self.cur()
+        if t.kind != "ID":
+            raise S2CError("alias %r 后需要目标变量名" % name, t.line, t.col)
+        target = t.text
+        self.next()
+        return ("alias", name, target)
 
     def parse_free(self):
         self.next()
@@ -828,10 +849,17 @@ class Compiler:
         self.fns = {}
         self.warnings = []
         self._label_seq = 0
+        self._fn_runtime = set()   # v0.3d：转运行时子程序（callf/retf）的函数名
+        self._fn_label = {}        # 运行时函数名 → 子程序入口 label
+        self._used_runtime = []    # 实际发射过 callf 的运行时函数名（顺序生成体）
+        self._in_runtime = False   # 正在编译运行时函数体（内部 fn 调用一律内联）
         self.vtypes = {}      # v0.2：变量名 → bool/int/flag/string（编译期跟踪）
         self._tmpn = 0        # v0.3：隐藏临时变量序号（__t0..）
         self._loop = []       # v0.3：循环上下文栈 {break:, continue:}（for/while 的 break/continue）
         self._tmp_stack = []  # v0.3：当前表达式的隐藏临时变量列表（用后 free）
+        self.const_fold = False  # v0.3b：const 折叠模式（真常量，不产 var，编进 Flash 程序）
+        self.consts = {}         # const_fold 时：常量名 → (type, 规范化值文本)
+        self.aliases = {}        # v0.3c：编译期变量别名 name → target（引用处替换）
 
     # ---- 标签 / 引号 ----
     def new_label(self):
@@ -856,16 +884,201 @@ class Compiler:
             return "'" + text + "'"
         raise S2CError("字符串同时含 ' 与 \"，无法表示: %r" % text)
 
+    # ---- v0.3b/c：const 折叠 + alias 编译期替换 ----
+    def declare_alias(self, name, target):
+        """登记编译期别名 name → target（alias <name> <target>）。"""
+        if name in SYNTAX_WORDS or name in RESERVED_CMD:
+            raise S2CError("别名不能为保留字 %r" % name)
+        if name in self.aliases:
+            raise S2CError("别名 %r 重复定义" % name)
+        if name in self.consts:
+            raise S2CError("别名 %r 与 const 常量同名" % name)
+        if name in self.vtypes:
+            raise S2CError("别名 %r 与已声明的变量/常量同名" % name)
+        if name == target:
+            raise S2CError("别名不能指向自己: %r" % name)
+        if target in RESERVED_CMD:
+            raise S2CError("别名目标不能为保留字 %r" % target)
+        self.aliases[name] = target
+
+    def resolve(self, name):
+        """沿别名链解析变量名到最终名（编译期别名替换）。无别名原样返回。"""
+        steps = 0
+        while name in self.aliases:
+            name = self.aliases[name]
+            steps += 1
+            if steps > len(self.aliases):
+                raise S2CError("别名循环引用")
+        return name
+
+    def declare_const(self, name, typ, value):
+        """预扫登记顶层 const（const_fold 模式）。校验名/值/类型，不占变量槽。"""
+        if len(name) > self.name_max:
+            raise S2CError("常量名 %r 过长（>%d）" % (name, self.name_max))
+        if name in RESERVED_CMD or name in SYNTAX_WORDS:
+            raise S2CError("常量名不能为保留字 %r" % name)
+        if "${" in value:
+            raise S2CError("const 常量值不能引用变量: %r" % value)
+        if len(value) > self.value_max:
+            raise S2CError("常量 %s 的字面值过长（>%d）：%r" % (name, self.value_max, value))
+        if typ is None:
+            typ = infer_var_type(value)
+        if name in self.consts:
+            raise S2CError("常量 %r 重复声明" % name)
+        if name in self.aliases:
+            raise S2CError("常量 %r 与别名同名" % name)
+        self.consts[name] = (typ, value)
+
+    def const_of(self, name):
+        """name 是否为 const 常量（先过别名）；是则返回 (type, 值文本)，否则 None。"""
+        if not self.const_fold:
+            return None
+        return self.consts.get(self.resolve(name))
+
+    def fold_varref(self, text):
+        """展开/折叠参数文本里的 ${name}：
+        - 别名(alias) → 编译期替换为目标名（恒生效）
+        - const 常量（const_fold 模式）→ 折叠为字面量值
+        - 其余 ${name} 保留原样（运行时展开）"""
+        if "${" not in text:
+            return text
+        out = []
+        i = 0
+        n = len(text)
+        while i < n:
+            j = text.find("${", i)
+            if j < 0:
+                out.append(text[i:])
+                break
+            k = text.find("}", j + 2)
+            if k < 0:
+                out.append(text[i:])
+                break
+            name = text[j + 2:k]
+            rn = self.resolve(name)
+            e = self.consts.get(rn) if (self.const_fold and rn in self.consts) else None
+            out.append(text[i:j])
+            if e is not None:
+                out.append(e[1])
+            elif rn != name:
+                out.append("${" + rn + "}")
+            else:
+                out.append(text[j:k + 1])
+            i = k + 1
+        return "".join(out)
+
+    def _const_int_lit(self, name):
+        """const 名 → 可作 int 运算/数值比较操作数的字面量文本；非 int 常量返回 None。"""
+        e = self.consts.get(self.resolve(name)) if self.const_fold else None
+        if e is None:
+            return None
+        if e[0] == "int":
+            return e[1]
+        return None
+
     def emit_call(self, name, args):
-        """SCL 普通式调用：'cmd a b'"""
+        """SCL 普通式调用：'cmd a b'（参数里 ${别名/常量} 编译期替换）"""
         if not args:
             return name
+        args = [self.fold_varref(a) for a in args]
         return name + " " + " ".join(self.quote_lit(a) for a in args)
+
+    # ---- v0.3d：fn 运行时子程序分析（无参 + 体>3 + 调用>3 才转 callf/retf，否则内联） ----
+    def _count_calls(self, sts):
+        """统计整个程序（顶层 + 所有 fn 体）里对用户 fn 的调用次数。"""
+        cnt = {}
+        def walk(s):
+            for st in s:
+                k = st[0]
+                if k == "call":
+                    if st[1] in self.fns:
+                        cnt[st[1]] = cnt.get(st[1], 0) + 1
+                elif k == "if":
+                    walk(st[2])
+                    if st[3] is not None:
+                        walk(st[3])
+                elif k == "while":
+                    walk(st[2])
+                elif k == "do":
+                    walk(st[2])
+                elif k == "when":
+                    for (_k, _a, b) in st[2]:
+                        walk(b)
+        for st in sts:
+            if st[0] == "fndef":
+                walk(st[3])
+            else:
+                walk([st])
+        return cnt
+
+    def _body_blocked(self, body):
+        """运行时函数体禁止：var/constvar/alias/free/break/continue/ret_set
+        （这些依赖调用点上下文或变量生命周期，转子程序会失真）。含则回退内联。"""
+        def walk(s):
+            for st in s:
+                k = st[0]
+                if k in ("var", "constvar", "alias", "free",
+                         "break", "continue", "ret_set"):
+                    return True
+                if k == "if":
+                    if walk(st[2]):
+                        return True
+                    if st[3] is not None and walk(st[3]):
+                        return True
+                elif k == "while":
+                    if walk(st[2]):
+                        return True
+                elif k == "do":
+                    if walk(st[2]):
+                        return True
+                elif k == "when":
+                    for (_k, _a, b) in st[2]:
+                        if walk(b):
+                            return True
+            return False
+        return walk(body)
+
+    def _analyze_fns(self, stmts):
+        """fn → 内联 or 运行时子程序。规则（无参前提下）：
+        体语句>3 且 全程序调用>3 → 运行时（callf/retf，体只存一份）；否则内联。
+        带参 fn 恒内联；体含 var/free/break 等禁止节点则回退内联。"""
+        calls = self._count_calls(stmts)
+        for name, fd in self.fns.items():
+            _, _, params, body = fd
+            if params:
+                continue                       # 带参 fn：参数须克隆替换，只能内联
+            if len(body) <= 3:
+                continue
+            if calls.get(name, 0) <= 3:
+                continue
+            if self._body_blocked(body):
+                continue                       # 保守回退：内联语义保持原状
+            self._fn_runtime.add(name)
+
+    def _fn_lab(self, name):
+        """取/分配运行时函数入口 label。"""
+        if name not in self._fn_label:
+            self._fn_label[name] = self.new_label()
+        return self._fn_label[name]
 
     # ---- 主流程：产生线性代码列表 ----
     def compile(self, stmts):
         lines = []
+        self._analyze_fns(stmts)
         self.emit_stmts(stmts, lines, set(), [])
+        # 主流程之后：为每个实际 callf 过的运行时函数追加唯一子程序体
+        for name in self._used_runtime:
+            fd = self.fns[name]
+            _, _, _params, body = fd
+            bl = []
+            self._in_runtime = True
+            try:
+                self.emit_stmts(body, bl, set(), [name])
+            finally:
+                self._in_runtime = False
+            lines.append("label " + self._fn_label[name])
+            lines.extend(bl)
+            lines.append("retf")
         return ";".join(lines)
 
     def emit_stmts(self, stmts, lines, vs, exp_stack):
@@ -882,7 +1095,16 @@ class Compiler:
         if k == "call":
             name, args = st[1], st[2]
             if name in self.fns:
-                self.expand_fn(name, args, lines, vs, exp_stack)
+                if self._in_runtime:
+                    # 运行时函数体内部：一律内联（无嵌套 callf/retf）
+                    self.expand_fn(name, args, lines, vs, exp_stack)
+                elif name in self._fn_runtime:
+                    # 无参大函数多调用点 → 转运行时子程序调用（体末尾唯一一份）
+                    if name not in self._used_runtime:
+                        self._used_runtime.append(name)
+                    lines.append("callf " + self._fn_lab(name))
+                else:
+                    self.expand_fn(name, args, lines, vs, exp_stack)
                 return
             if name in RESERVED_CMD:
                 raise S2CError("不能调用保留命令 %r（SCL 内置）" % name)
@@ -890,7 +1112,12 @@ class Compiler:
         elif k == "var":
             lines.append(self.emit_var(st[1], st[2], st[3], vs))
         elif k == "constvar":
-            lines.append(self.emit_var(st[1], st[2], st[3], vs, is_const=True))
+            if self.const_fold:
+                pass   # 真常量已预扫登记（declare_const）；不产 var 指令、不占变量槽
+            else:
+                lines.append(self.emit_var(st[1], st[2], st[3], vs, is_const=True))
+        elif k == "alias":
+            self.declare_alias(st[1], st[2])   # 编译期别名，不产链
         elif k == "free":
             lines.append(self.emit_free(st[1], vs))
         elif k == "ret_set":
@@ -916,6 +1143,11 @@ class Compiler:
             raise S2CError("未知 AST 节点 %r" % (k,))
 
     def emit_var(self, name, typ, value, vs, is_const=False):
+        if name in self.aliases:
+            raise S2CError("不能声明与别名同名的变量 %r（alias %s）" % (name, self.aliases[name]))
+        if self.const_fold and name in self.consts:
+            raise S2CError("const 常量 %r 不可重新 var 声明" % name)
+        value = self.fold_varref(value)   # 初值里的 ${别名/常量} 编译期替换
         if len(name) > self.name_max:
             raise S2CError("变量名 %r 过长（>%d）" % (name, self.name_max))
         if name in RESERVED_CMD or name in SYNTAX_WORDS:
@@ -933,6 +1165,7 @@ class Compiler:
 
     def emit_free(self, name, vs):
         if name is not None:
+            name = self.resolve(name)
             if name not in vs:
                 raise S2CError("释放未定义的变量 %r" % name)
             vs.discard(name)
@@ -944,6 +1177,8 @@ class Compiler:
 
     # ---- 赋值语句：name = expr（v0.3：完整算术/位，多运算符，用隐藏临时变量 __t） ----
     def emit_assign(self, name, expr, lines, vs):
+        if self.const_fold and name in self.consts:
+            raise S2CError("const 常量 %r 不可赋值" % name)
         typ = self.vtypes.get(name)
         if typ is None:
             raise S2CError("赋值目标 %r 需先用 var 声明" % name)
@@ -954,7 +1189,11 @@ class Compiler:
                 if k == "str":
                     lines.append("var string %s=%s" % (name, self.quote_lit(expr[1])))
                 elif k == "id":
-                    lines.append("var string %s=${%s}" % (name, expr[1]))
+                    c = self.const_of(expr[1])
+                    if c is not None:
+                        lines.append("var string %s=%s" % (name, self.quote_lit(c[1])))
+                    else:
+                        lines.append("var string %s=${%s}" % (name, self.resolve(expr[1])))
                 else:
                     raise S2CError("string 变量 %r 只能赋字符串/变量" % name)
                 return
@@ -962,7 +1201,15 @@ class Compiler:
                 if k == "bool":
                     lines.append("var bool %s=%s" % (name, "true" if expr[1] else "false"))
                 elif k == "id":
-                    lines.append("var bool %s=${%s}" % (name, expr[1]))
+                    c = self.const_of(expr[1])
+                    if c is not None:
+                        if c[0] == "bool":
+                            lines.append("var bool %s=%s" % (name, c[1]))
+                        else:
+                            raise S2CError("bool 变量 %r 不能赋 %s 常量 %r"
+                                           % (name, c[0], expr[1]))
+                    else:
+                        lines.append("var bool %s=${%s}" % (name, self.resolve(expr[1])))
                 elif k == "num":
                     lines.append("var bool %s=%s" % (name, expr[1]))
                 else:
@@ -997,7 +1244,14 @@ class Compiler:
             lines.append("var int %s=%s" % (dst, "1" if expr[1] else "0"))
             return
         if k == "id":
-            lines.append("var int %s=${%s}" % (dst, expr[1]))
+            c = self.const_of(expr[1])
+            if c is not None:
+                if c[0] == "int":
+                    lines.append("var int %s=%s" % (dst, c[1]))
+                else:
+                    raise S2CError("int 运算不能使用 %s 常量 %r" % (c[0], expr[1]))
+                return
+            lines.append("var int %s=${%s}" % (dst, self.resolve(expr[1])))
             return
         if k in ("neg", "notb"):
             src = self.emit_operand(expr[1], lines, vs)
@@ -1019,7 +1273,12 @@ class Compiler:
         """返回可作操作数的文本（变量名/字面量）；复合子式先求到隐藏临时变量"""
         k = expr[0]
         if k == "id":
-            return expr[1]
+            c = self.const_of(expr[1])
+            if c is not None:
+                if c[0] == "int":
+                    return c[1]          # 常量折叠为数字字面量
+                raise S2CError("int 运算不能使用 %s 常量 %r" % (c[0], expr[1]))
+            return self.resolve(expr[1])
         if k == "num":
             return expr[1]
         if k == "bool":
@@ -1048,7 +1307,17 @@ class Compiler:
             out.append(self.emit_call(name, args))
             return
         if k == "var":
-            out.append("btest " + cond[1])     # 变量真值 → G_RETURN
+            c = self.const_of(cond[1])
+            if c is not None:
+                if c[0] == "bool":
+                    out.append(self.emit_call(self.ret_setter,
+                                              ["1" if c[1].lower() == "true" else "0"]))
+                elif c[0] in ("int", "flag"):
+                    out.append("btest " + c[1])   # 常量真值 → G_RETURN
+                else:
+                    raise S2CError("字符串常量 %r 不能直接作条件真值" % cond[1])
+                return
+            out.append("btest " + self.resolve(cond[1]))  # 变量真值 → G_RETURN
             return
         if k == "lit":
             out.append("btest " + cond[1])     # 字面量真值 → G_RETURN
@@ -1082,6 +1351,11 @@ class Compiler:
             x = cond[1]
             if x[0] == "bool":
                 out.append(self.emit_call(self.ret_setter, ["0" if x[1] else "1"]))
+                return
+            c = self.const_of(x[1]) if x[0] == "var" else None
+            if c is not None and c[0] == "bool":
+                out.append(self.emit_call(self.ret_setter,
+                                          ["0" if c[1].lower() == "true" else "1"]))
                 return
             tx = self.cond_text(x)
             if tx is not None:      # 原子（变量/字面量）→ 直接 bnot，最短
@@ -1125,23 +1399,33 @@ class Compiler:
         raise S2CError("未知条件节点 %r" % (k,))
 
     def _is_str(self, n):
-        """节点是否为字符串语境：引号字面量，或 string/flag 类型变量"""
+        """节点是否为字符串语境：引号字面量，或 string/flag 类型变量（含 string/flag 常量）"""
         if n[0] == "str":
             return True
         if n[0] == "var":
-            return self.vtypes.get(n[1]) in ("string", "flag")
+            c = self.const_of(n[1])
+            if c is not None:
+                return c[0] in ("string", "flag")
+            return self.vtypes.get(self.resolve(n[1])) in ("string", "flag")
         return False
 
     def _str_text(self, n):
         if n[0] == "str":
             return self.quote_lit(n[1])   # 含空格需引号
         if n[0] == "var":
-            return "${" + n[1] + "}"      # 运行时按变量文本展开
+            c = self.const_of(n[1])
+            if c is not None:
+                return self.quote_lit(c[1])   # 常量文本（含空格需引号）
+            return "${" + self.resolve(n[1]) + "}"  # 运行时按变量文本展开
         raise S2CError("字符串比较操作数不支持 %r" % (n,))
 
     def cond_text(self, x):
         if x[0] == "var":
-            return x[1]
+            c = self.const_of(x[1])
+            if c is not None:
+                # int 常量作比较操作数 → 数字字面量；bool/flag/string 走各自分支
+                return c[1] if c[0] == "int" else None
+            return self.resolve(x[1])
         if x[0] == "lit":
             return x[1]
         if x[0] == "bool":
@@ -1437,19 +1721,26 @@ class Compiler:
 # ============================ 顶层接口 ============================
 
 def translate(source, ret_setter="setret", max_len=512,
-              var_max=4, name_max=8, value_max=15):
-    """源码 → (chain, warnings)。抛 S2CError。"""
+              var_max=4, name_max=8, value_max=15, const_fold=False):
+    """源码 → (chain, warnings)。抛 S2CError。
+
+    const_fold=True：const 折叠模式（供预编译 Flash 程序 scl_emit_c 使用）——
+    顶层 const 只登记为编译期常量，不产 var 指令、不占变量槽；引用处折叠成字面量。
+    """
     toks = tokenize(source)
     parser = Parser(toks)
     stmts = parser.parse_program()
 
     comp = Compiler(ret_setter=ret_setter, var_max=var_max,
                     name_max=name_max, value_max=value_max)
+    comp.const_fold = const_fold
     for st in stmts:
         if st[0] == "fndef":
             if st[1] in comp.fns:
                 raise S2CError("函数 %r 重复定义" % st[1])
             comp.fns[st[1]] = st
+        elif const_fold and st[0] == "constvar":
+            comp.declare_const(st[1], st[2], st[3])   # 预扫登记（不产 var const）
     chain = comp.compile(stmts)
     return chain, comp.warnings
 

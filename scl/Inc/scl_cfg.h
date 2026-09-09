@@ -91,6 +91,12 @@ extern "C" {
 #error "SCL_CFG_RUN_TEXT_EN 与 SCL_CFG_RUN_PROG_EN 至少需一个为 1"
 #endif
 
+/* 脚本命令（s2c 编译产物注册成命令）总开关：1=SCL_Scmd_* 可用；0=裁掉。
+   执行用 SCL_RunProg（预编译 const 程序），故需 SCL_CFG_RUN_PROG_EN=1 */
+#ifndef SCL_CFG_SCMD_EN
+#define SCL_CFG_SCMD_EN      1u
+#endif
+
 /* ============================ 环境变量缓冲（持久配置） ============================ */
 
 /* 环境变量缓冲总开关：1=支持（默认配置表装载/用户存储装载、序列化固化导出）。
