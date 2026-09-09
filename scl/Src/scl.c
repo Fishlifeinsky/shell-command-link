@@ -3074,6 +3074,8 @@ uint8_t SCL_RunProg(const scl_prog_t *prog)
 }
 #endif /* SCL_CFG_RUN_PROG_EN */
 
+#if ((SCL_CFG_RUN_TEXT_EN) != 0u) || ((SCL_CFG_RUN_PROG_EN) != 0u)
+
 void SCL_Loop(void)
 {
     if (s_inited == 0u)
@@ -3121,6 +3123,30 @@ void SCL_Abort(void)
 {
     s_abort = 1u;
 }
+
+#else
+/* ============ mini 态：无字节码解释器；SCL_Loop 仅推进异步命令等待 ============ */
+
+void SCL_Loop(void)
+{
+    if (s_inited == 0u)
+    {
+        SCL_Init();
+    }
+    (void)SCL_AsyncPoll();
+}
+
+uint8_t SCL_Idle(void)
+{
+    return (SCL_AsyncBusy() != 0u) ? 0u : 1u;
+}
+
+void SCL_Abort(void)
+{
+    (void)SCL_AsyncPoll();   /* 无解释器可中断；仅清等待 */
+}
+
+#endif
 
 /* ============================ 脚本命令（s2c 编译产物注册成命令） ============================ */
 

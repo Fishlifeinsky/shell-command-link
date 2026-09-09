@@ -216,6 +216,8 @@ PROFILES = [
                                   "-DSCL_CFG_ARG_CACHE_MAX=128", "-DSCL_CFG_LABEL_MAX=8",
                                   "-DSCL_CFG_VAR_MAX=4", "-DSCL_CFG_ARG_MAX=6",
                                   "-DSCL_CFG_ARG_LEN_MAX=24"), "-O2"),
+    ("mini_O2",  "mini-scl(O2)", ("-DSCL_CFG_MINI_EN=1",), "-O2"),
+    ("mini_Os",  "mini-scl(-Os)", ("-DSCL_CFG_MINI_EN=1",), "-Os"),
 ]
 
 
