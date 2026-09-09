@@ -1751,10 +1751,6 @@ static void Scl_DoHelp(void)
             Scl_Msg("      ");
             Scl_DescPrintUsage(node);   /* 模板概要（usage 行） */
         }
-        if ((node->desc != NULL) && (node->desc->doc != NULL))
-        {
-            Scl_Msg("      %s", node->desc->doc);
-        }
 #endif
     }
 }
