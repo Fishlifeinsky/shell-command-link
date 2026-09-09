@@ -1007,8 +1007,8 @@ int SCL_AsyncPoll(void)
 
 uint8_t SCL_RunLine(const char *line)
 {
-    static char tb[SCL_CFG_ARG_BUF_BYTES];   /* token 文本区 */
-    static char nm[SCL_CMDNAME_MAX];
+    char tb[SCL_CFG_ARG_BUF_BYTES];   /* token 文本区（仅调用时占栈，避免常驻 RAM） */
+    char nm[SCL_CMDNAME_MAX];
     scl_invoke_arg_t ia[SCL_CFG_ARG_MAX];
     int32_t iv;
     uint16_t nml;
