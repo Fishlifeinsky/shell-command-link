@@ -77,6 +77,52 @@ extern scl_cmd_t * const __stop_scl_cmds[];
 #endif
 ```
 
+### 3.1.1 实测：段名与"要不要改链接脚本"（arm-none-eabi 14.2，无/有脚本对照）
+
+用最小样例（3 个 .o 各放 1~2 项进段，main 只引用 `__start_/__stop_` 读项数）实测：
+
+| 实验 | 段名 | 链接脚本 | `--gc-sections` | 结果 |
+|---|---|---|---|---|
+| **M1** | `scl_cmds`（**不带前导点**） | **无** | 开 | ✅ **自动生成边界符号**，段保留（vma `0x8044`，只读，紧跟 `.text`） |
+| M2 | `scl_cmds` | 有（同名输出段 + `KEEP`） | 开 | ✅ 同 M1（vma 由脚本决定） |
+| M3 | `scl_cmds` | 无 | 关 | ✅ 同 M1 |
+| L1 | `.scl_cmds`（带前导点） | 有（同名输出段 + `KEEP`） | 开 | ❌ `undefined reference to __start_scl_cmds` |
+| **L2** | `.scl_cmds` | 有 + **手写 2 行边界符号** | 开 | ✅ 成功（符号 `__start_scl_cmds`/`__stop_scl_cmds` 就位） |
+| L3 | 把段**并进 `.text`** | 有 | 开 | ❌ 无法枚举（没有边界符号，链接失败） |
+| B | `scl_dead` 无人引用 | 无 | 开 | ❌ 段被 GC 丢弃（`.o` 里有、`.elf` 里无） |
+| — | 任意段名 | — | — | ❌ **PE/COFF（mingw gcc）完全不支持**：`undefined reference to __stop_...` |
+
+**结论（回答"要不要改链接文件 / 能不能直接放 .text"）：**
+
+1. **不是必须改链接脚本**——条件是段名**不带前导点**（`scl_cmds` 而非 `.scl_cmds`）。
+   GNU ld 会把它当孤儿段自动安置，并自动生成 `__start_scl_cmds`/`__stop_scl_cmds`；
+   由于这两个符号被代码引用，`--gc-sections` **不会**误删（M1 实测）。
+2. **绝对不能直接放 `.text`**：`.text` 没有边界符号，放进去就**无法枚举**（L3 实测链接失败）。
+   要枚举就必须是"独立命名的段"。
+3. 若偏爱带点的段名（`.scl_cmds` 更贴合 `.rodata.*` 家族习惯），**必须**在 `.ld` 里
+   显式建输出段并**手写两行边界符号**（L2 实测通过）。
+4. **仍建议在 `.ld` 里显式放**（4 行），收益：
+   - 位置可控（钉在 Flash 区、标 `(READONLY)`，消除 `LOAD segment with RWX` 警告）；
+   - `KEEP(*(scl_cmds))` 兜底，避免任何 GC 意外；
+   - 与 IAR/Keil 的差异集中在一处。
+5. **可移植性红线**：`__start_/__stop_` 是 ELF/GNU-ld 特性——PE/COFF 完全不支持（实测），
+   IAR/Keil 也没有 → `SCL_CFG_CMD_AUTOREG_EN=0` 回退开关必须保留。
+
+推荐的 `.ld` 片段（放在 `.text`/`.rodata` 之后、`.data` 之前）：
+
+```ld
+  /* SCL 自注册表：命令节点指针 + 变量绑定项 */
+  .scl_cmds (READONLY) : { KEEP(*(scl_cmds)) }
+  .scl_binds (READONLY) : { KEEP(*(scl_binds)) }
+```
+
+> 注意：段名在 C 侧**不带点**（`section("scl_cmds")`），脚本里可用 `.scl_cmds` 作为输出段名
+> ——此时边界符号必须**手写**，见 L2 写法：
+> ```ld
+> .scl_cmds (READONLY) : { __start_scl_cmds = .; KEEP(*(scl_cmds)); __stop_scl_cmds = .; }
+> ```
+> 若想省掉手写符号，就让 C 侧段名与输出段名**都不带点**（M1/M2）。
+
 ### 3.2 一行定义一个命令
 
 ```c
@@ -218,8 +264,10 @@ python tools/scl_build.py sizes     # 前后 Flash/RAM 对照
 
 | 风险 | 说明 | 回退 |
 |---|---|---|
-| `--gc-sections` 丢段 | 未加 `KEEP()` 且 `__start_/__stop_` 未被识别为根时，命令全丢 | `.ld` 加 `KEEP`；或 `AUTOREG_EN=0` |
-| 工具链不支持段符号 | IAR/Keil | `AUTOREG_EN=0` 走显式表 |
+| 段名带前导点 | `.scl_cmds` 时 ld **不**自动生成边界符号 → 必须手写 2 行（实测 L1 失败 / L2 成功） | C 侧段名改不带点；或 `.ld` 手写符号 |
+| 误放 `.text` | `.text` 无边界符号，无法枚举（实测 L3 链接失败） | 用独立命名段 |
+| `--gc-sections` 丢段 | **只要代码引用了 `__start_/__stop_`，段即被保留**（实测 M1）；无人引用才会丢（实测 B） | 仍建议 `.ld` 加 `KEEP` 兜底 |
+| 工具链不支持段符号 | PE/COFF 完全不支持（实测）；IAR/Keil 无 `__start_/__stop_` | `AUTOREG_EN=0` 走显式表 |
 | 重复注册 | 宿主仍调用 `Xxx_Register()` 且又开了自注册 → 同命令挂两次 | 文档说明；`SCL_RegisterCmd` 增加同名去重（可选） |
 | 顺序变化 | `help` 顺序/opc 编号变化 | 文件名排序约定；必要时两级段 |
 | 移动命令文件 | `example/demo_cmds.c` 被拆分，外部引用其符号的工程需同步 | 保留兼容薄壳或明确记为破坏性变更 |
