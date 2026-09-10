@@ -60,7 +60,8 @@
 
 | 文档 | 场景分类 | 状态 | 一句话 |
 |---|---|---|---|
-| [cmd-modular-registration.md](cmd-modular-registration.md) | 运行时/解释器 + 变量与绑定 | **提案中** | 命令与静态变量改"一命令一文件 + 段自注册"（Linux 驱动风格），放 `scl/cmd/` |
+| [cmd-modular-registration.md](cmd-modular-registration.md) | 运行时/解释器 + 变量与绑定 | **提案中** | 命令/静态变量用宏声明 + py 扫描生成 `scl_cmd_list.c`，放 `scl/cmd/` |
+| [var-sources.md](var-sources.md) | 变量与绑定 + 编译链 | **提案中** | 变量来源 static/const/var 的三来源两态语义（mini 只支持 static 且禁初始化） |
 | [mini-direct-call.md](mini-direct-call.md) | 生成器 | 搁置 | 生成代码直接调 handler 而非 `SCL_CmdInvoke` 按名查找 |
 | [trim-desc-and-argbuf.md](trim-desc-and-argbuf.md) | 配置裁剪 | 提案中 | 关 `CMDDESC` / 收紧 `ARG_MAX`、`ARG_LEN_MAX` 进一步压体积 |
 

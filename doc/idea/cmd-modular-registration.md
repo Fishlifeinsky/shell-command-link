@@ -1,10 +1,14 @@
-# 命令与静态变量改为"一命令一文件 + 段自注册"（Linux 驱动风格）
+# 命令与静态变量：宏声明 + Python 生成注册表（`scl/cmd/`）
 
 > 状态：**提案中**（等确认后再执行）
 > 场景分类：运行时/解释器 ＋ 变量与绑定 ＋ 构建工具
-> 提出者 / 日期：agent 提案 / 2026-09-10
+> 提出者 / 日期：agent 提案 / 2026-09-10（机制由用户拍板：**不用链接器段**）
 > 关联：`scl/Inc/scl.h`、`scl/Src/scl.c`（`SCL_RegisterCmd`:872、`SCL_CmdRegisterDesc`:2260、
-> `SCL_InitEx` 末尾重置 `s_cmd_head`:2949）、`example/demo_cmds.c`、`tools/scl_build.py`
+> `SCL_InitEx` 末尾重置 `s_cmd_head`:2949）、`example/demo_cmds.c`、`tools/scl_build.py`、
+> 变量来源另见 [`var-sources.md`](var-sources.md)
+>
+> 变更记录：初版拟用"链接器段自注册"（Linux `module_init` 风格）；2026-09-10 用户拍板改为
+> **宏 + py 生成注册表**（不依赖任何链接器特性、不改 `.ld`）。段方案的实测结论保留在 §3.1.1。
 
 ---
 
@@ -42,42 +46,63 @@
 
 ## 3. 方案
 
-### 3.1 段自注册机制（GNU ld）
+### 3.1 选定机制：宏标记 + Python 生成注册表（**不用段**）
 
-新增 `scl/Inc/scl_reg.h`：
+> 决策（2026-09-10）：放弃链接器段方案，改为"宏 + 构建期扫描 + 生成注册表"。理由见 §3.1.1。
 
-```c
-/* 段名必须是合法 C 标识符，GNU ld 才会自动生成 __start_/__stop_ 符号 */
-#define SCL_SEC_CMDS   __attribute__((used, section("scl_cmds")))
-#define SCL_SEC_BINDS  __attribute__((used, section("scl_binds")))
+三步走：
 
-/* 把一个命令节点指针放进段里（只做登记，不产生函数调用） */
-#define SCL_CMDREG_ONE(_sym) \
-    static scl_cmd_t * const __scl_cmdreg_##_sym SCL_SEC_CMDS = &(s_cmd_##_sym)
+```
+① C 侧：每条命令/每个静态变量用宏声明（宏同时产出定义，并保证"可被文本扫描"的唯一形态）
+② 构建期：python 扫描 scl/cmd/*.c（扫描目录可配）→ 生成 scl_cmd_list.c
+③ 运行期：SCL_Init() 调用生成表提供的注册入口（弱符号：没有表也能编译/链接）
 ```
 
-`scl.c` 在 `SCL_InitEx` 的 `s_cmd_head = NULL; s_next_opc = ...;` **之后**遍历：
+生成的 `scl_cmd_list.c`（一个命令数组 + 一个变量数组 + 注册入口）：
 
 ```c
-#if (SCL_CFG_CMD_AUTOREG_EN != 0u)
-extern scl_cmd_t * const __start_scl_cmds[];
-extern scl_cmd_t * const __stop_scl_cmds[];
+/* 由 tools/scl_gen_list.py 生成，勿手改 */
+#include "scl.h"
+
+/* ---- 指令数组 ---- */
+scl_cmd_t * const scl_cmd_list[] = { &s_cmd_echo, &s_cmd_setret, /* ... */ };
+const int scl_cmd_list_n = (int)(sizeof(scl_cmd_list) / sizeof(scl_cmd_list[0]));
+
+/* ---- 静态变量数组 ---- */
+const scl_var_bind_t * const scl_var_list[] = { &s_bind_cnt, /* ... */ };
+const int scl_var_list_n = (int)(sizeof(scl_var_list) / sizeof(scl_var_list[0]));
+
+/* ---- 注册入口：SCL_Init 调用（弱符号，可缺省） ---- */
+void SCL_RegList_Init(void)
 {
-    scl_cmd_t * const *it;
-    for (it = __start_scl_cmds; it < __stop_scl_cmds; it++)
+    int i;
+    for (i = 0; i < scl_cmd_list_n; i++)
     {
-        scl_cmd_t *nd = *it;
+        scl_cmd_t *nd = scl_cmd_list[i];
         if (nd == NULL) { continue; }
 #if (SCL_CFG_CMDDESC_EN != 0u)
         if (nd->desc != NULL) { SCL_CmdRegisterDesc(nd, nd->desc); continue; }
 #endif
         SCL_RegisterCmd(nd);
     }
+    for (i = 0; i < scl_var_list_n; i++) { SCL_VarBindOne(scl_var_list[i]); }
 }
+```
+
+`scl.c` 侧（`SCL_InitEx` 末尾、清空 `s_cmd_head`/`s_next_opc` 之后）：
+
+```c
+#if (SCL_CFG_REG_LIST_EN != 0u)
+SCL_WEAK void SCL_RegList_Init(void);          /* 宏适配 gcc/IAR/Keil */
+if (SCL_RegList_Init != NULL) { SCL_RegList_Init(); }
 #endif
 ```
 
-### 3.1.1 实测：段名与"要不要改链接脚本"（arm-none-eabi 14.2，无/有脚本对照）
+**收益**：不依赖任何链接器特性（GNU ld / IAR / Keil / PE 都能用）、**不改 `.ld`**、
+`--gc-sections` 无风险、没有表时静默降级（弱符号）。
+**代价**：多一个构建步骤，且**扫描规则必须稳定**（由宏定义保证，见 §3.2）。
+
+### 3.1.1 为什么不用链接器段（实测留档）
 
 用最小样例（3 个 .o 各放 1~2 项进段，main 只引用 `__start_/__stop_` 读项数）实测：
 
@@ -123,88 +148,102 @@ extern scl_cmd_t * const __stop_scl_cmds[];
 > ```
 > 若想省掉手写符号，就让 C 侧段名与输出段名**都不带点**（M1/M2）。
 
-### 3.2 一行定义一个命令
+### 3.2 宏：命令的声明形态（供扫描）
+
+`scl/Inc/scl_reg.h`（新增）：
 
 ```c
-/* 带参数模板 */
-#define SCL_CMD_DEFINE(_name, _fn, _sync, _help, _args)                  \
-    static scl_cmd_t s_cmd_##_name;                                      \
-    static const scl_cmd_desc_t s_desc_##_name = {                       \
-        #_name, _help, _args, (int)(sizeof(_args) / sizeof((_args)[0])), \
-        _fn, _sync };                                                    \
-    static scl_cmd_t * const s_cmdreg_##_name SCL_SEC_CMDS = &s_cmd_##_name
-
-/* 无参数模板（sizeof(NULL) 非法 → 单独宏，项数写 0） */
-#define SCL_CMD_DEFINE_NA(_name, _fn, _sync, _help)                      \
-    static scl_cmd_t s_cmd_##_name;                                      \
-    static const scl_cmd_desc_t s_desc_##_name = { #_name, _help, NULL, 0u, _fn, _sync }; \
-    static scl_cmd_t * const s_cmdreg_##_name SCL_SEC_CMDS = &s_cmd_##_name
+/* 定义一条命令：产出【节点 + 描述 + handler 前置声明】，并留下稳定的可扫描形态。
+   py 脚本按 SCL_CMD_DEFINE(...) 收集，生成 scl_cmd_list.c。
+   要求：一行一条（或参数列表跨行但括号完整），命令名是第一个参数。 */
+#define SCL_CMD_DEFINE(_name, _fn, _sync, _help, _args)                 \
+    scl_cmd_t s_cmd_##_name;                                            \
+    const scl_cmd_desc_t s_desc_##_name = {                             \
+        #_name, _help, _args, SCL_ARGCNT(_args), _fn, _sync };          \
+    SCL_CMD_REG_ITEM(_name)      /* 仅供 py 扫描的标记，编译期展开为空 */
 ```
 
-配合构造函数把 `node->desc` 指向字面 desc（节点是 RAM，回填不算额外成本）：
+- `scl_cmd_t` 节点**不再 `static`**（否则生成表取不到符号）；desc 用**外部链接**（同上）。
+  代价：节点/描述符号名暴露在全局命名空间 → 统一加前缀 `s_cmd_` / `s_desc_` 规避冲突。
+- 无参数模板单独一个宏（`sizeof(NULL)` 非法）：`SCL_CMD_DEFINE_NA(_name, _fn, _sync, _help)`。
+- `SCL_ARGCNT(_args)` 宏算项数；或按是否 NULL 分支（由生成器决定，见实现步骤）。
+
+### 3.3 宏：静态变量的声明形态（供扫描）
 
 ```c
-#define SCL_CMD_DEFINE(_name, ...) \
-    ... \
-    static void __scl_descinit_##_name(void) __attribute__((constructor)); \
-    static void __scl_descinit_##_name(void) { s_cmd_##_name.desc = &s_desc_##_name; }
+/* 定义一个 static 型脚本变量（mini 唯一支持的变量来源）：
+   产出 类型化静态存储 + getter/setter + 绑定项，并留下可扫描形态。
+   约定：**不允许初始化**（值由宿主 SCL_VarSet 注入，避免每次运行被重置） */
+#define SCL_VAR_DEFINE(_name, _type, _cname, _get, _set)                \
+    static _cname;                       /* 例：static int32_t m_##_name */ \
+    static const char * _get(void);      /* 由命令文件实现 */             \
+    static int _set(const char *);                                          \
+    const scl_var_bind_t s_bind_##_name = { #_name, _type, _get, _set };    \
+    SCL_VAR_REG_ITEM(_name)
 ```
 
-> 不用 `constructor` 也可以：把 desc 指针直接放进段里（段元素改为
-> `{ scl_cmd_t *node; const scl_cmd_desc_t *desc; }`），初始化时成对使用。
-> **推荐后者**（无构造器依赖，IAR/Keil 也能退化为查表），见 §3.6。
-
-### 3.3 静态变量同样处理
-
-```c
-/* 单个绑定变量登记进 scl_binds 段 */
-#define SCL_VAR_DEFINE(_name, _type, _get, _set)                          \
-    static const scl_var_bind_t s_bind_##_name = { #_name, _type, _get, _set }; \
-    static const scl_var_bind_t * const __scl_varreg_##_name SCL_SEC_BINDS = &s_bind_##_name
-```
-
-`SCL_InitEx` 中遍历 `__start_scl_binds/__stop_scl_binds`，逐个登记（等价于 `SCL_VarBind` 单条版；
-需在 `scl_var.c` 增加 `Scl_VarBindOne()` 内部入口，mini 态生效）。
+- 生成的 `scl_cmd_list.c` 收集 `&s_bind_<name>` 进 `scl_var_list[]`；
+- 运行时由 `SCL_VarBindOne()` 逐条登记进 mini 的绑定路由表（等价于现有 `SCL_VarBind(tab,n)` 的单条版）；
+- **`const` 型**：编译期折叠，不产生绑定项、不进 `scl_var_list[]`（normal/mini 都支持）；
+- **`var` 型**（会话变量）：mini 下**编译期报错**，normal 下沿用会话槽表（见 `doc/idea/var-sources.md`）。
 
 ### 3.4 `scl/cmd/` 目录划分
 
 ```
 scl/cmd/
-├── README.md          # 命名/新增命令的步骤
-├── cmd_echo.c         # echo
-├── cmd_setret.c       # setret
-├── cmd_noop.c         # noop
-├── cmd_wait.c         # wait（异步示例）
-├── cmd_demo_reset.c   # demo_reset
-└── cmd_demo_inc.c     # demo_inc
+├── README.md            # 命名规则 / 新增命令步骤 / 生成表说明
+├── cmd_echo.c           # 手写命令：echo
+├── cmd_setret.c         # 手写命令：setret
+├── cmd_noop.c           # 手写命令：noop
+├── cmd_wait.c           # 手写命令：wait（异步示例）
+├── cmd_demo_reset.c     # 手写命令：demo_reset
+├── cmd_demo_inc.c       # 手写命令：demo_inc
+├── gen_<name>.c         # s2c → 指令 的生成物（开启该功能时落在这里）
+└── scl_cmd_list.c       # 由 tools/scl_gen_list.py 生成（勿手改）
 ```
 
-- 内容由 `example/demo_cmds.c` 拆分而来；`example/demo_cmds.c` 变为薄壳（或删除并改宿主直接依赖库内命令）；
-- 每个文件只含：一个 handler、一份 desc、一条 `SCL_CMD_DEFINE`，**不再有 `Xxx_Register()`**；
-- 通过 `SCL_CFG_BUILTIN_CMDS_EN`（新开关）决定是否把这些命令编进库。
+- 手写命令内容由 `example/demo_cmds.c` 拆分而来；`example/demo_cmds.c` 变为薄壳（或删除）；
+- 每个手写命令文件只含：一个 handler、一条 `SCL_CMD_DEFINE`（desc 由宏派生），**不再有 `Xxx_Register()`**；
+- **s2c → 指令 的生成物也放本目录**（`gen_<name>.c`），并同样用 `SCL_CMD_DEFINE`/`SCL_VAR_DEFINE`
+  的宏形态产出，从而被同一个扫描器收进注册表（见 §3.8）；
+- `SCL_CFG_BUILTIN_CMDS_EN`（新开关）决定是否把这些库内命令编进去；
+- `scl_cmd_list.c` 是**生成物**：建议纳入 `.gitignore` 或提交（两种都可，见 §9 问题 3）。
 
 ### 3.5 顺序 / 优先级
 
-单段 + **链接顺序**决定注册顺序：
+生成表里的数组顺序 = **扫描时按文件名排序**（生成器保证确定性）：
 
-- 正确性不受影响（const prog 按名调用，已核实）；
+- 正确性不受影响（const prog 走 `CALLN` 按名调用，已核实）；
 - 仅影响 `help` 列表顺序与运行期 `opc` 编号；
-- 需要固定顺序时：构建脚本按**文件名排序**传入 `.c`，或用两级段
-  （`scl_cmds.0` 核心 / `scl_cmds.1` 业务）在初始化里先遍历低优先级段。
-- **待定**：是否需要"优先级字段"（Linux `subsys_initcall` 风格）。当前建议不做，靠文件名排序。
+- 需要更强控制时，在扫描规则里支持"目录顺序 + 文件名前缀编号"（如 `00_sys_*.c`、`10_app_*.c`）；
+- **不做**优先级字段（避免给每个命令加 RAM 开销）。
 
-### 3.6 可移植性回退（必须做）
+### 3.6 可移植性与失败模式
 
-段机制依赖 GNU ld 的 `__start_/__stop_` 与链接脚本保留段：
-
-| 工具链 | 情况 | 处理 |
+| 工具链 / 场景 | 情况 | 处理 |
 |---|---|---|
-| GNU ld（arm-none-eabi-gcc / mingw） | 支持 `__start_/__stop_` | 直接可用；`--gc-sections` 下建议在 `.ld` 里 `KEEP(*(scl_cmds))` |
-| IAR | 无 `__start_/__stop_`，用 `__section_begin/__section_end` | 提供 `SCL_CFG_CMD_AUTOREG_EN=0` 回退 |
-| Keil/ARMCC | 用 `--keep` 或属性段 | 同上回退 |
+| 任意（GNU ld / IAR / Keil / PE） | 不依赖链接器特性 | ✅ 直接可用 |
+| 没有生成表（未跑生成器/未加进构建） | 弱符号 `SCL_RegList_Init` 为 NULL | 静默跳过；命令需自行 `SCL_RegisterCmd` 手动注册 |
+| `--gc-sections` | 表被显式引用（`SCL_RegList_Init` 里遍历） | ✅ 不会被误删 |
+| 扫描器漏扫/宏写错 | 命令静默不注册（难发现） | 生成器输出**清单日志** + `SCL_RegList_Dump()` 自检；CI 里断言条数 |
 
-回退路径：`SCL_CFG_CMD_AUTOREG_EN=0` 时宏不再产生段项，库改为遍历一张
-**显式命令表**（`SCL_CMD_TABLE` 数组，由构建时或手工列出）。即"自注册是便利，不是唯一路径"。
+失败模式是"漏注册"，所以生成器必须打印扫描结果（文件→命令名列表），构建日志即证据。
+
+### 3.8 s2c → 指令 的生成物落位
+
+开启"s2c 转换为指令"时，生成物**也放 `scl/cmd/`**（`gen_<name>.c`），并采用与手写命令
+**完全相同的宏形态**，从而被同一个扫描器收进 `scl_cmd_list.c`：
+
+```c
+/* scl/cmd/gen_measure_flow.c（由 tools/scl_emit_c.py --mini 生成，勿手改） */
+static void Cmd_measure_flow(int argc, char *argv[]) { measure_flow_mini_start(); }
+SCL_CMD_DEFINE(measure_flow, Cmd_measure_flow, NULL, "单点运动脚本", NULL);
+/* 脚本内 static 变量 → SCL_VAR_DEFINE(...) 逐条产出 */
+```
+
+- 生成器新增 `--out-dir scl/cmd`（默认即此目录），输出文件名 `gen_<name>.c`；
+- 生成器的 `*_mini_register()` 退役：改由注册表统一注册；
+- 生成物建议**不进版本库**（与 `scl_cmd_list.c` 一致策略，见 §9 问题 3/7）。
 
 ### 3.7 可选 phase 2：节点常量化（省 RAM，暂不做）
 
@@ -216,36 +255,41 @@ scl/cmd/
 
 | 维度 | 影响 |
 |---|---|
-| 静态 RAM | 每命令多 1 个段指针项（4 B，在 Flash 段里）+ 可能的 desc 指针；**RAM 节点不变** → RAM ≈ 不变 |
-| Flash | 每命令 +4 B（段项）+ 少量遍历代码（≈40~60 B，一次性） |
-| 公共 API | 新增宏与 `scl_reg.h`；`SCL_RegisterCmd`/`SCL_CmdRegisterDesc` **保持不变**（手动注册仍可用） |
-| 配置开关 | 新增 `SCL_CFG_CMD_AUTOREG_EN`（段自注册）、`SCL_CFG_BUILTIN_CMDS_EN`（库内命令） |
-| 普通态 / mini 态 | 两态通用；mini 侧变量绑定也改为段登记 |
-| 生成物与工具链 | `tools/scl_build.py` 源列表加 `scl/cmd/*.c`；`example/CMakeLists.txt`、`big_demo`、`mcu_template` 同步；生成器的 `*_mini_register()` 可后续改为自注册 |
-| 向后兼容性 | 默认 `AUTOREG_EN=0` 时行为与现在完全一致；开 `=1` 后宿主**不再需要**调用各 `Xxx_Register()`（但重复注册会导致命令重复挂链，需在文档中说明） |
+| 静态 RAM | 生成表是 `const` 指针数组（Flash）；每命令 **+4 B Flash**（表项）。**RAM 节点不变** → RAM ≈ 不变 |
+| Flash | 每命令 +4 B（表项）+ 一次性 `SCL_RegList_Init` 代码（≈60~100 B） |
+| 公共 API | 新增宏 `scl_reg.h`、`SCL_VarBindOne()`、弱符号入口 `SCL_RegList_Init()`；`SCL_RegisterCmd`/`SCL_CmdRegisterDesc`/`SCL_VarBind` **保持不变** |
+| 配置开关 | 新增 `SCL_CFG_REG_LIST_EN`（用生成表）、`SCL_CFG_BUILTIN_CMDS_EN`（库内命令） |
+| 普通态 / mini 态 | 两态通用；mini 侧静态变量也走生成表 |
+| 生成物与工具链 | 新增 `tools/scl_gen_list.py`；`tools/scl_build.py` 增加"先生成再编译"；`example/CMakeLists.txt`、`big_demo`、`mcu_template` 同步 |
+| 向后兼容性 | 默认 `REG_LIST_EN=0` 时行为与现在完全一致；开 `=1` 后宿主**不再需要**调用各 `Xxx_Register()` |
+| 构建依赖 | 新增强依赖：**改命令文件后必须重跑生成器**（由构建脚本/CMake 依赖保证） |
 
 ## 5. 执行步骤
 
-1. 新增 `scl/Inc/scl_reg.h`（段/宏定义，含 `AUTOREG_EN` 分支）；
-2. `scl.c`：在 `SCL_InitEx` 末尾加段遍历（`#if AUTOREG_EN`）；
-3. `scl_var.c`（mini 臂）：加 `Scl_VarBindOne()` 与绑定段遍历；
-4. 建 `scl/cmd/`，把 `example/demo_cmds.c` 拆成 6 个文件 + `README.md`；
-5. `tools/scl_build.py`、`example/CMakeLists.txt`、`example/big_demo/`、`example/mcu_template/` 同步源列表；
-6. 提供 `.ld` 片段文档（`KEEP(*(scl_cmds))` / `KEEP(*(scl_binds))`）；
-7. 增一个自注册示例（`SCL_Init()` 后直接 `echo`）并纳入 `scl_build.py test`。
+1. 新增 `scl/Inc/scl_reg.h`（宏：`SCL_CMD_DEFINE[_NA]`、`SCL_VAR_DEFINE`、`SCL_WEAK`、`SCL_ARGCNT`）；
+2. 新增 `tools/scl_gen_list.py`：扫描 → 生成 `scl_cmd_list.c`（含两个数组 + `SCL_RegList_Init`）；
+3. `scl.c`：`SCL_InitEx` 末尾加弱符号调用（`#if SCL_CFG_REG_LIST_EN`）；
+4. `scl_var.c`：新增 `SCL_VarBindOne()`（mini 臂）与三来源分派（见 `var-sources.md`）；
+5. 建 `scl/cmd/`，把 `example/demo_cmds.c` 拆成 6 个文件 + `README.md`；
+6. `tools/scl_build.py`、`example/CMakeLists.txt`、`example/big_demo/`、`example/mcu_template/` 同步源列表与生成步骤；
+6. 增自注册示例（`SCL_Init()` 后不调用任何 `Xxx_Register()` 就能用 `echo`）并纳入 `scl_build.py test`；
+7. 生成器加入构建：`tools/scl_build.py` 先跑 `scl_gen_list.py` 再编译（类似 mini 生成流程）。
 
 ## 6. 验证（可直接复制执行）
 
 ```powershell
+# 生成注册表并打印扫描清单（应列出每个文件 → 命令名/变量名）
+python tools/scl_gen_list.py scl/cmd -o scl/cmd/scl_cmd_list.c
+
 python tools/scl_build.py test      # 全量回归（含 mini_boot_sim）
 python tools/scl_build.py check     # 裁剪矩阵零告警
 python tools/scl_build.py sizes     # 前后 Flash/RAM 对照
-# 额外断言：开 AUTOREG_EN 后不调用任何 Xxx_Register()，命令仍可用、help 能列出
+# 额外断言：不调用任何 Xxx_Register()，命令仍可用、help 能列出、变量可读写
 ```
 
 期望数据（待填）：
 
-| 指标 | 现状 | phase 1 | 差 |
+| 指标 | 现状 | 改后 | 差 |
 |---|---|---|---|
 | Flash（默认档 -O2） | 20782 | | |
 | RAM | 1882 | | |
@@ -253,10 +297,10 @@ python tools/scl_build.py sizes     # 前后 Flash/RAM 对照
 
 ## 7. 闭环标准
 
-- [ ] 编译：普通态 + mini 态零错误零告警（含 `AUTOREG_EN=0/1` 两种）
+- [ ] 编译：普通态 + mini 态零错误零告警（含 `REG_LIST_EN=0/1` 两种）
 - [ ] 回归：`tools/scl_build.py test` 全绿
 - [ ] 体积：默认档/mini 档 Flash 与 RAM 前后实测数字
-- [ ] 文档：`doc/arc/` 增"命令自注册机制"，`.ld` 片段写入 `doc/spec/`
+- [ ] 文档：`doc/arc/` 增"命令/变量注册机制"，扫描规则与宏用法写入 `doc/spec/`
 - [ ] 提交：`add:`（机制）+ `change:`（迁移命令）+ `md:`
 - [ ] 回填：本文件补实测数据与提交号
 
@@ -264,24 +308,27 @@ python tools/scl_build.py sizes     # 前后 Flash/RAM 对照
 
 | 风险 | 说明 | 回退 |
 |---|---|---|
-| 段名带前导点 | `.scl_cmds` 时 ld **不**自动生成边界符号 → 必须手写 2 行（实测 L1 失败 / L2 成功） | C 侧段名改不带点；或 `.ld` 手写符号 |
-| 误放 `.text` | `.text` 无边界符号，无法枚举（实测 L3 链接失败） | 用独立命名段 |
-| `--gc-sections` 丢段 | **只要代码引用了 `__start_/__stop_`，段即被保留**（实测 M1）；无人引用才会丢（实测 B） | 仍建议 `.ld` 加 `KEEP` 兜底 |
-| 工具链不支持段符号 | PE/COFF 完全不支持（实测）；IAR/Keil 无 `__start_/__stop_` | `AUTOREG_EN=0` 走显式表 |
-| 重复注册 | 宿主仍调用 `Xxx_Register()` 且又开了自注册 → 同命令挂两次 | 文档说明；`SCL_RegisterCmd` 增加同名去重（可选） |
-| 顺序变化 | `help` 顺序/opc 编号变化 | 文件名排序约定；必要时两级段 |
+| 扫描器漏扫 | 命令静默不注册（比链接失败更难发现） | 生成器打印扫描清单；`SCL_RegList_Dump()` 自检；CI 断言条数 |
+| 宏写成多行/含括号 | 扫描正则失配 | 约定宏参数为简单标识符并保持括号平衡；生成器报 "无法解析" 并**让构建失败** |
+| 符号可见性变化 | 节点/disp 由 `static` 变外部链接 → 可能重名 | 统一 `s_cmd_`/`s_desc_`/`s_bind_` 前缀；同名由链接器报错兜底 |
+| 重复注册 | 宿主仍调用 `Xxx_Register()` 又开了注册表 | 文档说明；`SCL_RegisterCmd` 同名去重（可选） |
+| 顺序变化 | `help` 顺序/opc 编号变化 | 生成器按文件名排序；必要时文件名加序号前缀 |
 | 移动命令文件 | `example/demo_cmds.c` 被拆分，外部引用其符号的工程需同步 | 保留兼容薄壳或明确记为破坏性变更 |
+
+> 段方案相关的实测风险（段名带点、误放 `.text`、GC 丢段、工具链不支持）已随方案否决，见 §3.1.1 留档。
 
 ## 9. 待确认决策
 
-1. **`SCL_CFG_CMD_AUTOREG_EN` 默认值**：默认 `0`（不破坏现有工程）还是默认 `1`（新方式为主）？
-2. **`scl/cmd/` 放什么**：只放"机制 + 6 个 demo 命令"，还是把 `big_demo` 的 30+ 命令也一并迁进来做样板？
-3. **顺序策略**：接受"链接顺序 + 文件名排序"，还是要引入优先级字段/两级段？
-4. **phase 2（节点常量化省 RAM）**：本次一起做，还是先只做 phase 1 量数据？
+1. **`SCL_CFG_REG_LIST_EN` 默认值**：默认 `0`（不破坏现有工程）还是 `1`（新方式为主）？
+2. **`scl/cmd/` 放什么**：只迁 6 个 demo 命令，还是把 `big_demo` 的 30+ 命令也一并迁进来做样板？
+3. **`scl_cmd_list.c` 是否提交进仓库**：提交（构建不需 python）还是忽略（每次生成）？
+4. **扫描目录**：只扫 `scl/cmd/`，还是允许配置多目录（如工程自己的 `app/cmd/`）？
 5. **`example/demo_cmds.c`**：保留兼容薄壳，还是直接删除（破坏性）？
+6. **变量来源模型**（static/const/var × mini/normal）见单独提案 `doc/idea/var-sources.md`，需一并确认。
 
 ## 10. 闭环记录
 
 | 日期 | 动作 | 结果 / 实测数据 | 提交 |
 |---|---|---|---|
-| 2026-09-10 | 建档（仅规划，未改代码） | 待确认 §9 | — |
+| 2026-09-10 | 建档（仅规划，未改代码） | 待确认 §9 | `e7e969c` |
+| 2026-09-10 | 方案变更：段 → 宏 + py 生成注册表（用户拍板），段方案留档于 §3.1.1 | 待确认 §9 | — |
