@@ -17,7 +17,9 @@
   注册后自动参数数量/类型校验并输出 usage，`help` 汇总带说明；`SCL_ParseInt` 无 libc 取数
 - **`help [cmd]` 单命令明细**：`help` 全览；`help <cmd>`（含内置元命令/运算，大小写不敏感）
   输出该命令 help+usage+逐参必选/可选说明（esp_console 风格）
-- 源码**多模块**：`scl.c`(核心) + `scl_var.c`(会话变量) + `scl_env.c`(env)，内部 `scl_priv.h` 共享
+- 源码**多模块**：`scl.c`(初始化编排) + `scl_exec.c`(编译链+执行核) + `scl_cmd.c`(注册表/调用/一行解析)
+  + `scl_desc.c`(描述层) + `scl_core.c`(文本/消息工具) + `scl_mem.c`(动态内存) + `scl_var.c`(变量) + `scl_env.c`(env)；
+  内部 `scl_priv.h` 共享（模块表见 `doc/arc/scl-modules.md`）
 - `free` 释放 / `var` 查剩余空位；**脚本跑完自动全释放**
 - 全局条件标志 `G_RETURN`：命令/比较指令写、`jump -a` 读（**读后自动清零**）
 - 普通调用 `cmd a b`（空白分隔；含空格的参数用引号包裹为整体）
@@ -44,7 +46,7 @@
 
 ## 占用与裁剪建议
 
-按当前默认配置用 gcc `-O2` 编译 `scl.c`、`scl_var.c`、`scl_env.c` 的对象文件，
+按当前默认配置用 gcc `-O2` 编译 `scl/Src/*.c`（8 个模块）的对象文件，
 SCL 核心约为：代码 `.text` 22.4 KB、只读数据 `.rdata` 5.0 KB、静态 RAM `.bss`
 约 2.1 KB。该结果是 PC 编译器口径，Cortex-M 的 Thumb-2 结果应以目标工具链为准。
 
@@ -87,7 +89,7 @@ SCL 核心约为：代码 `.text` 22.4 KB、只读数据 `.rdata` 5.0 KB、静�
 
 ```
 scl/Inc/scl.h scl_cfg.h       库公共接口 + 可裁剪配置
-scl/Src/scl.c scl_var.c scl_env.c   核心(编译/执行/命令/异步) · 会话变量 · 环境变量缓冲(多模块)
+scl/Src/*.c                  库源（8 个模块，新增模块无需改脚本/CMake —— 源列表为 glob）
 scl/Src/scl_priv.h             多模块内部共享头（勿在应用层使用）
 tools/scl_script2chain.py     现代语法脚本 → SCL 指令链（Python 转译器）
 tools/scl_emit_c.py           SCL 脚本 → const C 程序（Flash 只读，省 RAM）
@@ -135,7 +137,7 @@ python tools/scl_build.py sizes      # ARM(Cortex-M4) 各裁剪档 Flash/RAM（�
 
 ```bash
 gcc -O2 -Wall -Wextra -I scl/Inc -I scl/Src -I example \
-    scl/Src/scl.c scl/Src/scl_var.c scl/Src/scl_env.c \
+    scl/Src/*.c \
     example/scl_port.c example/demo_cmds.c \
     example/main.c -o build/scl_test        # 全量测试
 ```

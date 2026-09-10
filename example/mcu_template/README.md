@@ -51,7 +51,7 @@ flowchart LR
 ## 3. STM32（CubeIDE/Keil）接入步骤
 
 1. **建工程**：CubeMX 生成带 UART1（115200 8N1，开中断）的基础工程。
-2. **拷库**：把 `scl/`（`scl.h` `scl_cfg.h` + `scl.c` `scl_var.c` `scl_env.c` + `scl_priv.h`）拷入工程，加入编译；
+2. **拷库**：把 `scl/` 整个目录拷入工程（`Inc/` 头文件 + `Src/` 8 个模块源 + 需要时 `cmd/`），加入编译；
    `scl_priv.h` 是内部头，不用包含，但**三个 .c 必须一起编译链接**。
 3. **拷模板**：`scl_stm32_port.c/.h` → 工程；按你的句柄把
    `SCL_MCU_HUART`（`scl_stm32_port.h` 顶部）改成你的 `huart1`/`huart2`。
@@ -79,7 +79,7 @@ flowchart LR
 
 ```bash
 gcc -pipe -O2 -Wall -Wextra -I scl/Inc -I scl/Src -I example \
-    scl/Src/scl.c scl/Src/scl_var.c scl/Src/scl_env.c \
+    scl/Src/*.c \
     example/scl_port.c example/demo_cmds.c \
     example/mcu_template/mcu_boot_sim.c -o build/mcu_boot_sim
 python -c "import subprocess;print(subprocess.run(['build/mcu_boot_sim'],capture_output=True).stdout.decode('utf-8','replace'))"

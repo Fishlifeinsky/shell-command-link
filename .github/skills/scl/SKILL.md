@@ -36,7 +36,10 @@ SCL 是一个面向 C 项目的轻量级嵌入式脚本运行时。它把命令 
 
 这个仓库分成三层：
 
-- 核心运行时：`scl/Inc/scl.h`、`scl/Inc/scl_cfg.h`、`scl/Src/scl.c`、`scl/Src/scl_var.c`、`scl/Src/scl_env.c`
+- 核心运行时：`scl/Inc/scl.h`、`scl/Inc/scl_cfg.h`、`scl/Inc/scl_reg.h`，
+  源码（`scl/Src/`）按职责分为 8 个模块：`scl.c`(初始化编排) / `scl_exec.c`(编译链+执行核) /
+  `scl_cmd.c`(注册表·调用·一行解析) / `scl_desc.c`(描述层) / `scl_core.c`(文本·消息) /
+  `scl_mem.c`(动态内存) / `scl_var.c`(变量) / `scl_env.c`(env)；模块表见 `doc/arc/scl-modules.md`
 - 脚本编译/转译：`tools/scl_script2chain.py`、`tools/scl_emit_c.py`
 - 示例与集成：`example/`、`example/big_demo/`、`example/mcu_template/`
 
