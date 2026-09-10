@@ -61,9 +61,15 @@
 | 文档 | 场景分类 | 状态 | 一句话 |
 |---|---|---|---|
 | [cmd-modular-registration.md](cmd-modular-registration.md) | 运行时/解释器 + 变量与绑定 | **提案中** | 命令/静态变量用宏声明 + py 扫描生成 `scl_cmd_list.c`，放 `scl/cmd/` |
+| [opcode-from-list-index.md](opcode-from-list-index.md) | 运行时/解释器 + 生成器 | **提案中** | opcode 改为"注册表内下标"，查表 O(1)、分配可静态推导 |
+| [scl-module-split.md](scl-module-split.md) | 运行时/解释器 + 构建工具 | **提案中** | 把 `scl.c` 拆成 core/cmd/line/compile/exec/desc（行为零变化） |
+| [env-as-var.md](env-as-var.md) | 变量与绑定 + 配置裁剪 | **提案中** | ENV 并入 var 语义：init 时创建，与 var 同一层同一批 API |
 | [var-sources.md](var-sources.md) | 变量与绑定 + 编译链 | **提案中** | 变量来源 static/const/var 的三来源两态语义（mini 只支持 static 且禁初始化） |
 | [mini-direct-call.md](mini-direct-call.md) | 生成器 | 搁置 | 生成代码直接调 handler 而非 `SCL_CmdInvoke` 按名查找 |
 | [trim-desc-and-argbuf.md](trim-desc-and-argbuf.md) | 配置裁剪 | 提案中 | 关 `CMDDESC` / 收紧 `ARG_MAX`、`ARG_LEN_MAX` 进一步压体积 |
+
+> **实施顺序（已定）**：先做两个"行为零变化"的（`opcode-from-list-index` → `scl-module-split`），
+> 再落语义变更的 `env-as-var`；`var-sources` 的编译链部分随生成器一起改。
 
 ## 7. 相关
 
