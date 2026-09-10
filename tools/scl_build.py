@@ -128,6 +128,8 @@ def cmd_test(_a):
     print("\n== mini-scl 自包含状态机自检（example/mini/boot_mini_sim.c） ==")
     ok &= build_test("mini_boot_sim", ("-DSCL_CFG_MINI_EN=1",),
                      main=pathlib.Path("mini") / "boot_mini_sim.c")
+    print("\n== opcode 下标化断言（example/test_cmd_opc.c） ==")
+    ok &= build_test("cmd_opc", main="test_cmd_opc.c")
     print("\n== 转译器 s2c_test（精确比对 + 真实回喂 + emit-c） ==")
     r = sh([sys.executable, str(ROOT / "tools" / "s2c_test.py")])
     print(dec(r.stdout))

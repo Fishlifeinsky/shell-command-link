@@ -59,6 +59,21 @@ extern "C" {
 #define SCL_CFG_REG_LIST_EN     1u
 #endif
 
+/* 业务命令 opcode 起点：注册表命令按 `BASE + 表内下标` 分配；
+   手工 SCL_RegisterCmd 从 `BASE + SCL_CFG_CMD_RESERVE` 起继续。
+   （生成物 scl_cmd_list.c 也用它，故必须放在公共配置头） */
+#ifndef SCL_CFG_OP_CMD_BASE
+#define SCL_CFG_OP_CMD_BASE     0x0100u
+#endif
+
+/* 注册表（scl/cmd/scl_cmd_list.c）命令占用的 opcode 区间长度。
+   opcode = SCL_OP_CMD_BASE + 表内下标，故必须给注册表留出足够区间；
+   手工 SCL_RegisterCmd 的命令从 BASE + 本值 起继续分配，两者不冲突。
+   生成器会在命令数超过本值时构建期报错（提示调大）。 */
+#ifndef SCL_CFG_CMD_RESERVE
+#define SCL_CFG_CMD_RESERVE     64u
+#endif
+
 /* 静态变量绑定表开关：1=保留"名字→getter/setter"路由表（static 型变量可用）；
    0=编译期关掉该表，省下 SCL_CFG_VAR_BIND_MAX 项静态 RAM（默认 8×16B ≈ 128B），
      代价是 static 型变量不可用（SCL_VarBind/One 变空操作，查找恒不命中）。

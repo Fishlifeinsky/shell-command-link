@@ -215,6 +215,13 @@ def emit(cmds, vars_, files, out_name):
     L.append("")
 
     # ---- 注册入口（SCL_Init 以弱符号调用；无表时该函数不存在也不报错） ----
+    # opcode 由"表内下标"决定：nd->opc = SCL_OP_CMD_BASE + i（不再依赖注册顺序自增）
+    L.append("/* 注册表命令数：供库侧校验 opc 预留区间 */")
+    L.append("#define SCL_REG_CMD_COUNT %d" % len(cmds))
+    L.append("#if (SCL_REG_CMD_COUNT > SCL_CFG_CMD_RESERVE)")
+    L.append('#error "注册表命令数超过 SCL_CFG_CMD_RESERVE，请调大该宏（scl_cfg.h）"')
+    L.append("#endif")
+    L.append("")
     L.append("void SCL_RegList_Init(void)")
     L.append("{")
     L.append("    int i;")
@@ -222,6 +229,7 @@ def emit(cmds, vars_, files, out_name):
     L.append("    {")
     L.append("        scl_cmd_t *nd = scl_cmd_list[i];")
     L.append("        if (nd == NULL) { continue; }")
+    L.append("        nd->opc = (uint16_t)(SCL_CFG_OP_CMD_BASE + i);   /* opcode = 表内下标 */")
     L.append("#if (SCL_CFG_CMDDESC_EN != 0u)")
     L.append("        SCL_CmdRegisterDesc(nd, scl_desc_list[i]);")
     L.append("#else")

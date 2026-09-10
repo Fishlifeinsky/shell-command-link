@@ -48,6 +48,12 @@ static const scl_cmd_desc_t * const scl_desc_list[] = {
 };
 #endif
 
+/* 注册表命令数：供库侧校验 opc 预留区间 */
+#define SCL_REG_CMD_COUNT 6
+#if (SCL_REG_CMD_COUNT > SCL_CFG_CMD_RESERVE)
+#error "注册表命令数超过 SCL_CFG_CMD_RESERVE，请调大该宏（scl_cfg.h）"
+#endif
+
 void SCL_RegList_Init(void)
 {
     int i;
@@ -55,6 +61,7 @@ void SCL_RegList_Init(void)
     {
         scl_cmd_t *nd = scl_cmd_list[i];
         if (nd == NULL) { continue; }
+        nd->opc = (uint16_t)(SCL_CFG_OP_CMD_BASE + i);   /* opcode = 表内下标 */
 #if (SCL_CFG_CMDDESC_EN != 0u)
         SCL_CmdRegisterDesc(nd, scl_desc_list[i]);
 #else

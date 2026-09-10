@@ -124,7 +124,7 @@ enum
     SCL_OP_RETF  = 0x002Au,   /* retf：无条件跳回 fn_back（aoff 忽略） */
     SCL_OP_CACHE = 0x002Bu,   /* cache [max|gc|zombie]：缓存统计与 GC */
 
-    SCL_OP_CMD_BASE = 0x0100u  /* 注册命令 opcode 起点（自动递增） */
+    SCL_OP_CMD_BASE = SCL_CFG_OP_CMD_BASE  /* 注册命令 opcode 起点（注册表按下标分配） */
 };
 
 /* ========================== 静态状态 ========================== */
@@ -882,7 +882,10 @@ static int Scl_RetTake(void)
     return r;
 }
 
-/* ========================== 命令注册（自动分配 opcode） ========================== */
+/* ========================== 命令注册 ==========================
+   opcode 由**注册表（list 下标）**决定：scl/cmd/scl_cmd_list.c 在注册前按顺序
+   写 `nd->opc = SCL_OP_CMD_BASE + i`；本函数**不覆盖已分配的 opcode**。
+   手工注册（opc==0）时才从"保留区之后"继续分配，避免与注册表区间冲突。 */
 
 void SCL_RegisterCmd(scl_cmd_t *cmd)
 {
@@ -892,8 +895,11 @@ void SCL_RegisterCmd(scl_cmd_t *cmd)
     {
         return;
     }
-    cmd->opc  = s_next_opc;              /* 自动分配字节码 opcode */
-    s_next_opc = (uint16_t)(s_next_opc + 1u);
+    if (cmd->opc == 0u)                  /* 0=未分配（手工注册路径） */
+    {
+        cmd->opc  = s_next_opc;
+        s_next_opc = (uint16_t)(s_next_opc + 1u);
+    }
     cmd->next = NULL;
     pp = &s_cmd_head;
     while (*pp != NULL)
@@ -2962,7 +2968,8 @@ uint8_t SCL_InitEx(const scl_allocator_t *allocator)
 #endif
 #endif
     s_cmd_head  = NULL;
-    s_next_opc  = (uint16_t)SCL_OP_CMD_BASE;
+    /* 手工注册从"注册表预留区间之后"开始；注册表命令的 opcode 由表下标直接给出 */
+    s_next_opc  = (uint16_t)(SCL_OP_CMD_BASE + SCL_CFG_CMD_RESERVE);
 #if ((SCL_CFG_SCMD_EN != 0u) && (SCL_CFG_RUN_PROG_EN != 0u))
     s_scmd_head = NULL;
 #endif
