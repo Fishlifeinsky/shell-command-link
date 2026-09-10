@@ -51,17 +51,15 @@ void Scl_MemSetAllocator(const scl_allocator_t *a)
 #endif
 }
 
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
 /**
-  * @brief  分配器是否就绪（静态内存模式下恒为就绪）
+  * @brief  分配器是否就绪（仅在动态内存模式下存在；静态模式无此概念）
   */
 static uint8_t Scl_MemReady(void)
 {
-#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
     return (s_allocator.alloc != NULL) && (s_allocator.free != NULL) ? 1u : 0u;
-#else
-    return 1u;
-#endif
 }
+#endif
 
 /**
   * @brief  分配 size 字节（带 1 个 size_t 头部）

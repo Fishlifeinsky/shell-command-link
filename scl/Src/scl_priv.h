@@ -4,7 +4,8 @@
   * @brief   SCL 内部共享头（多模块拆分用；库用户勿依赖）
   *
   *          v0.3 源码按主题拆分为多个编译单元（全部必须一起编译链接）：
-  *            scl/Src/scl.c      —— 核心：编译/执行/命令注册/异步/内置命令/文本工具
+  *            scl/Src/scl.c      —— 核心：编译/执行/命令注册/异步/内置命令
+  *            scl/Src/scl_core.c —— 文本/数值小工具 + 消息输出（无 libc）
   *            scl/Src/scl_mem.c  —— 动态内存分配器与用量统计（SCL_CFG_DYNAMIC_MEM_EN）
   *            scl/Src/scl_var.c  —— 会话变量表与管理（SCL_CFG_VAR_*）
   *            scl/Src/scl_env.c  —— 环境变量缓冲（SCL_CFG_ENV_EN）
@@ -60,7 +61,7 @@ extern const scl_env_def_t *s_env_def;                 /* scl_env.c 定义 */
 extern uint16_t            s_env_def_n;
 #endif
 
-/* ========================== 文本/数值工具（scl.c 提供） ========================== */
+/* ========================== 文本/数值/消息（scl_core.c 提供） ========================== */
 
 uint16_t Scl_StrLen(const char *s);
 uint8_t  Scl_IsSp(char c);
@@ -73,6 +74,19 @@ uint8_t  Scl_IsDigit(char c);
 uint8_t  Scl_EqIN(const char *a, const char *b, uint16_t n);
 int      Scl_ParseI32Len(const char *s, uint16_t len, int32_t *out);
 uint16_t Scl_FmtI32(int32_t val, char *dst, uint16_t cap);
+
+/* 消息输出（级别门控与实现见 scl_core.c）。
+   关闭消息时在本头内联定义**空实现**，而非宏：
+     - 保留实参求值语义（用宏会让实参消失，触发 -Wunused-but-set-variable）
+     - static inline 空体可被完全消除 → 调用点零开销（等价于拆分前的同 TU 内联）
+     - static inline 未被使用时不会产生 -Wunused-function */
+#if (SCL_CFG_MSG_EN != 0u)
+void     Scl_Msg(const char *fmt, ...);
+void     Scl_MsgErr(const char *fmt, ...);
+#else
+static inline void Scl_Msg(const char *fmt, ...)    { (void)fmt; }
+static inline void Scl_MsgErr(const char *fmt, ...) { (void)fmt; }
+#endif
 
 /* ========================== 会话变量内部（scl_var.c 提供） ========================== */
 
