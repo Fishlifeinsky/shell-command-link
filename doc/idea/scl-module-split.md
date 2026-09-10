@@ -168,6 +168,33 @@ arm-none-eabi-size <各 .o>          # 模块级归属确认
 > help 文本（约 1 KB 的字符串表 + 输出逻辑）**没有**外置——它只被解释器调用，
 > 一旦挪到新编译单元就会变成"永远不会被消除的全局符号"，mini 会直接胖一圈。
 
+---
+
+## 11. 步骤 5/6 的收敛方案（与 §3.1 的差异，已定）
+
+§3.1 原计划把 `scl_compile.c` 与 `scl_exec.c` **分开**。按 §10.3 的实测口径重新评估后，
+**两者合并为一个编译单元 `scl_exec.c`**：
+
+1. 编译链与执行器共享参数缓存（`s_argc`/`s_arg_len`）与读回原语
+   （`Scl_ArgLoad`/`Scl_BlkText`/`Scl_ArgRestore`/`Scl_DoCallName`/`Scl_CmdFindOp`）；
+2. 这些原语目前都是 `static`，**在 mini 态仍会被编译**（引用点位于无条件的公共段）；
+   一旦为了跨文件而外置，就再也不能被消除 —— 这正是 §10.3 那次 **+383 B / +101 B** 的根因；
+3. 所以：
+
+| 文件 | 内容 |
+|---|---|
+| `scl/Src/scl_exec.c`（待建） | 编译（字面量归类/label/参数缓存）、执行（Step/算子/`SCL_Loop`）、内置命令（`var`/`free`/`cache`/`help`）、`SCL_Run`/`SCL_RunProg`、执行态与 `Scl_Finish` |
+| `scl/Src/scl.c`（收敛后） | opcode 常量、注册表弱符号接入、`SCL_InitEx`/`SCL_Init`、脚本命令（`SCL_Scmd_*`）、`SCL_Ret_*`，以及执行核的初始化/释放入口 |
+
+4. **执行态跟着使用它的模块走**：`s_bc`/`s_bc_len`/`s_pc`/`s_fn_back`/`s_steps`/
+   `s_argc`/`s_arg_len`/`s_labels`/`s_label_cnt`/`s_raw` 整体搬入 `scl_exec.c`，
+   并整段包在 `#if ((SCL_CFG_RUN_TEXT_EN) != 0u) || ((SCL_CFG_RUN_PROG_EN) != 0u)` 内——
+   mini 态整段不编译，天然不付体积；`scl.c` 通过 `Scl_ExecInit()` / `Scl_ExecRelease()`
+   驱动分配与释放（替代现在 `SCL_InitEx` 直接摆弄这些变量）。
+
+> 验收口径不变：每步 `python tools/scl_build.py all` 全绿、裁剪矩阵零告警、
+> 体积变化落在 §4 的 ≤ ±2%（mini ±100 B）内；超出必须在 §10 记录并给出原因。
+
 ### 10.3 关键取舍：外置的代价是"再也不会被消除"
 
 同一 TU 内的 `static` 函数/变量，**未被引用时编译器会整段消除**；
