@@ -27,7 +27,7 @@
 
 #include "scl.h"
 #include "scl_port.h"
-#include "demo_cmds.h"
+#include "scl_port.h"
 
 /* ========================== 测试基础设施 ========================== */
 
@@ -742,11 +742,7 @@ int main(void)
 
     printf("=== SCL v0.2 (类型化参数缓存 + bool/int/flag/string 变量 + 内置运算) ===\n");
     SCL_Init();
-#if (SCL_EX_CMDS_EN == 1u)
-    Scl_Demo_Register();
-#else
-    printf("(SCL_EX_CMDS_EN=0)\n");
-#endif
+    /* 命令由注册表在 SCL_Init 内自动注册（scl/cmd/scl_cmd_list.c，见 scl/scl.cmake） */
 
     TestBasics();
     TestVarsTyped();

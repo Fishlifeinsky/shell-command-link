@@ -9,7 +9,9 @@
 #include <stdlib.h>   /* atoi */
 
 static void Cmd_setret(int argc, char *argv[]);
+#if (SCL_CFG_CMDDESC_EN != 0u)
 static const scl_arg_spec_t a_setret_val[] = { { "value", SCL_T_INT, 0u, "0/1，写 G_RETURN" } };
+#endif
 
 static void Cmd_setret(int argc, char *argv[])
 {

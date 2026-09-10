@@ -202,6 +202,18 @@ def emit(cmds, vars_, files, out_name):
     L.append("const int scl_var_list_n = %d;" % len(vars_))
     L.append("")
 
+    # ---- 命令描述表（先于注册入口定义，避免先用后定义） ----
+    L.append("#if (SCL_CFG_CMDDESC_EN != 0u)")
+    L.append("static const scl_cmd_desc_t * const scl_desc_list[] = {")
+    if cmds:
+        for nm, _f, _l in cmds:
+            L.append("    &s_desc_%s," % nm)
+    else:
+        L.append("    NULL,")
+    L.append("};")
+    L.append("#endif")
+    L.append("")
+
     # ---- 注册入口（SCL_Init 以弱符号调用；无表时该函数不存在也不报错） ----
     L.append("void SCL_RegList_Init(void)")
     L.append("{")
@@ -211,7 +223,7 @@ def emit(cmds, vars_, files, out_name):
     L.append("        scl_cmd_t *nd = scl_cmd_list[i];")
     L.append("        if (nd == NULL) { continue; }")
     L.append("#if (SCL_CFG_CMDDESC_EN != 0u)")
-    L.append("        SCL_CmdRegisterDesc(nd, Scl_RegListDesc(i));")
+    L.append("        SCL_CmdRegisterDesc(nd, scl_desc_list[i]);")
     L.append("#else")
     L.append("        SCL_RegisterCmd(nd);")
     L.append("#endif")
@@ -221,23 +233,6 @@ def emit(cmds, vars_, files, out_name):
     L.append("        SCL_VarBindOne(scl_var_list[i]);")
     L.append("    }")
     L.append("}")
-    L.append("")
-
-    # ---- 描述查表（避免生成器依赖"每个命令都有 desc"的假设） ----
-    L.append("#if (SCL_CFG_CMDDESC_EN != 0u)")
-    L.append("const scl_cmd_desc_t *Scl_RegListDesc(int i)")
-    L.append("{")
-    L.append("    static const scl_cmd_desc_t * const tab[] = {")
-    if cmds:
-        for nm, _f, _l in cmds:
-            L.append("        &s_desc_%s," % nm)
-    else:
-        L.append("        NULL,")
-    L.append("    };")
-    L.append("    int n = (int)(sizeof(tab) / sizeof(tab[0]));")
-    L.append("    return (i < n) ? tab[i] : NULL;")
-    L.append("}")
-    L.append("#endif")
     L.append("")
     return "\n".join(L)
 

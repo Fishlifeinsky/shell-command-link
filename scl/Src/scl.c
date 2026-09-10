@@ -46,6 +46,21 @@
 extern void SCL_Port_PutChar(char c);
 #endif
 
+/* ========================== 注册表（生成物，弱符号接入） ========================== */
+/* scl/cmd/scl_cmd_list.c 由 scl/tool/scl_gen_list.py 生成，提供：
+       void SCL_RegList_Init(void);   —— 逐个注册命令与静态变量
+   未链接该文件时弱符号为 NULL，静默跳过（不影响库单独编译）。 */
+#if (SCL_CFG_REG_LIST_EN != 0u)
+#if defined(__GNUC__)
+#define SCL_REG_WEAK __attribute__((weak))
+#elif defined(__ICCARM__) || defined(__CC_ARM) || defined(__ARMCC_VERSION)
+#define SCL_REG_WEAK __weak
+#else
+#define SCL_REG_WEAK
+#endif
+extern void SCL_RegList_Init(void) SCL_REG_WEAK;
+#endif
+
 /* ========================== 编译期校验 ========================== */
 
 #if ((SCL_CFG_VAR_NAME_MAX) < 1u)
@@ -2967,6 +2982,15 @@ uint8_t SCL_InitEx(const scl_allocator_t *allocator)
 #endif
     s_ret       = 0u;
     s_keep_vars = 0u;
+
+#if (SCL_CFG_REG_LIST_EN != 0u)
+    /* 自动注册：命令 + 静态变量（生成表；弱符号，缺表时跳过） */
+    if (SCL_RegList_Init != NULL)
+    {
+        SCL_RegList_Init();
+    }
+#endif
+
     s_inited    = 1u;
     return 1u;
 }

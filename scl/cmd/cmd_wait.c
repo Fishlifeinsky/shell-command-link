@@ -14,7 +14,9 @@
 
 static void Cmd_wait(int argc, char *argv[]);
 static bool Sync_wait(bool clear);
+#if (SCL_CFG_CMDDESC_EN != 0u)
 static const scl_arg_spec_t a_wait_n[] = { { "n", SCL_T_INT, 0u, "模拟耗时 Loop 数" } };
+#endif
 
 /* handler：立即发起（记录剩余 Loop 数）后返回 */
 static void Cmd_wait(int argc, char *argv[])

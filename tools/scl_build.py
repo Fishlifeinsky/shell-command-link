@@ -39,7 +39,12 @@ INC = ["-I", str(ROOT / "scl" / "Inc"),
        "-I", str(ROOT / "example")]
 CORE_SRC = [str(ROOT / "scl" / "Src" / "scl.c"),
             str(ROOT / "scl" / "Src" / "scl_var.c"),
-            str(ROOT / "scl" / "Src" / "scl_env.c")]
+            str(ROOT / "scl" / "Src" / "scl_env.c"),
+            # 库内命令目录（一命令一文件）+ 生成的注册表（命令/静态变量数组）
+            *[str(p) for p in sorted((ROOT / "scl" / "cmd").glob("*.c"))]]
+
+# 使用注册表自动注册（唯一注册方式，见 scl/Inc/scl_cfg.h）
+CORE_DEFS = ("-DSCL_CFG_REG_LIST_EN=1",)
 
 ARM = "arm-none-eabi-gcc"
 ARM_MCU = ["-mcpu=cortex-m4", "-mthumb", "-std=c99"]
@@ -102,8 +107,8 @@ def pass_summary(text):
 def build_test(name, extra=(), main="main.c"):
     srcs = [*CORE_SRC,
             str(ROOT / "example" / "scl_port.c"),
-            str(ROOT / "example" / "demo_cmds.c"),
             str(ROOT / "example" / main)]
+    extra = (*CORE_DEFS, *extra)
     BUILD.mkdir(exist_ok=True)
     exe = BUILD / (name + EXE)
     if not compile_c(srcs, exe, extra):

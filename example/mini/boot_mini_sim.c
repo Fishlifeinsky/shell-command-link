@@ -23,7 +23,7 @@
 #include <string.h>
 #include "scl.h"
 #include "scl_port.h"
-#include "demo_cmds.h"
+#include "scl_port.h"
 
 #include "boot_mini.c"      /* 生成的状态机：register/start/step */
 
@@ -51,7 +51,7 @@ int main(void)
     static char cap[4096];
 
     SCL_Init();
-    Scl_Demo_Register();
+    /* 命令由注册表自动注册（SCL_Init 内部；见 scl/cmd/scl_cmd_list.c） */
     boot_mini_register();            /* 绑定变量 + 注册成命令 'boot' */
 
     /* 外部先写绑定变量（路由到类型化 static） */

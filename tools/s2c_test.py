@@ -294,7 +294,7 @@ def build_runner():
         str(ROOT / "scl" / "Src" / "scl_var.c"),
         str(ROOT / "scl" / "Src" / "scl_env.c"),
         str(ROOT / "example" / "scl_port.c"),
-        str(ROOT / "example" / "demo_cmds.c"),
+        *[str(p) for p in sorted((ROOT / "scl" / "cmd").glob("*.c"))],
         str(ROOT / "example" / "chain_runner.c"),
         "-o", str(RUNNER_EXE),
     ]
@@ -325,7 +325,6 @@ EMITC_MAIN = r'''
 #include <string.h>
 #include "scl.h"
 #include "scl_port.h"
-#include "demo_cmds.h"
 typedef struct { const char *name; const scl_prog_t *prog; } P;
 '''
 EMITC_MAIN_TAIL = r'''
@@ -355,8 +354,7 @@ int main(int argc, char *argv[])
         if (strcmp(s_progs[i].name, argv[1]) == 0) { p = &s_progs[i]; break; }
     }
     if (p == NULL) { printf("[NO-PROG]\n"); return 2; }
-    SCL_Init();
-    Scl_Demo_Register();
+    SCL_Init();   /* 命令由注册表在 SCL_Init 内自动注册（scl/cmd/scl_cmd_list.c） */
     if (SCL_RunProg(p->prog) == 0) { printf("[RUN-REJECT]\n"); return 2; }
     while (!SCL_Idle())
     {
@@ -465,7 +463,7 @@ def test_emitc():
             str(ROOT / "scl" / "Src" / "scl_var.c"),
             str(ROOT / "scl" / "Src" / "scl_env.c"),
             str(ROOT / "example" / "scl_port.c"),
-            str(ROOT / "example" / "demo_cmds.c"),
+            *[str(p) for p in sorted((ROOT / "scl" / "cmd").glob("*.c"))],
             str(ROOT / "build" / "_emitc_progs.c"),
             str(ROOT / "build" / "_emitc_main.c"),
             "-o", str(exe)]
@@ -494,13 +492,12 @@ SCMD_MAIN = r'''
 #include <stdio.h>
 #include "scl.h"
 #include "scl_port.h"
-#include "demo_cmds.h"
 extern void Scl_Scmd_Register_focus(void);
 int main(void)
 {
     uint8_t r1, r2, r3;
     SCL_Init();
-    Scl_Demo_Register();
+    /* 命令由注册表在 SCL_Init 内自动注册（scl/cmd/scl_cmd_list.c） */
     Scl_Scmd_Register_focus();
     r1 = SCL_Scmd_RunText("focus 512 3");
     printf("[A=%u]\n", (unsigned)r1);
@@ -546,7 +543,7 @@ def test_scmd():
         str(ROOT / "scl" / "Src" / "scl_var.c"),
         str(ROOT / "scl" / "Src" / "scl_env.c"),
         str(ROOT / "example" / "scl_port.c"),
-        str(ROOT / "example" / "demo_cmds.c"),
+        *[str(p) for p in sorted((ROOT / "scl" / "cmd").glob("*.c"))],
         str(ROOT / "build" / "_scmd_focus.c"),
         str(ROOT / "build" / "_scmd_main.c"),
         "-o", str(exe)]

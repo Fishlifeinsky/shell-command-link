@@ -439,9 +439,7 @@ int SCL_VarKeep(int keep);
   */
 const scl_cmd_t *SCL_CmdHead(void);
 
-#if (SCL_CFG_MINI_EN != 0u)
-
-/* ============================ mini：外部静态变量绑定路由（SCL_CFG_MINI_EN） ============================ */
+/* ============================ 外部静态变量绑定路由（static 来源；两态通用） ============================ */
 
 /**
   * @brief  绑定变量的文本 getter（取当前值文本；未定义返回 NULL）
@@ -469,7 +467,7 @@ typedef struct scl_var_bind
 } scl_var_bind_t;
 
 /**
-  * @brief  注册一批绑定变量（mini 生成代码在 <name>_mini_register() 里调用）
+  * @brief  注册一批绑定变量（生成代码/宿主在初始化时调用）
   * @param  tab 描述数组（表项为 const，表项生命周期需贯穿运行期）
   * @param  n   条数
   * @retval 成功注册条数（容量 SCL_CFG_VAR_BIND_MAX 满则截断）
@@ -478,11 +476,16 @@ typedef struct scl_var_bind
 int SCL_VarBind(const scl_var_bind_t *tab, int n);
 
 /**
+  * @brief  注册单个绑定变量（注册表 scl_cmd_list.c 逐条调用；等价 SCL_VarBind(tab,1)）
+  * @param  bind 绑定项（须为静态存储，生命周期贯穿运行期）
+  * @retval 0=成功；-1=参数非法或表满
+  */
+int SCL_VarBindOne(const scl_var_bind_t *bind);
+
+/**
   * @brief  清空绑定路由表
   */
 void SCL_VarBindClear(void);
-
-#endif /* SCL_CFG_MINI_EN */
 
 /* ============================ 命令编程式调用（供自包含生成代码 / 宿主直接调命令） ============================ */
 

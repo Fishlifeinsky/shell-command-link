@@ -10,7 +10,9 @@
 #include <stdlib.h>   /* atoi */
 
 static void Cmd_demo_reset(int argc, char *argv[]);
+#if (SCL_CFG_CMDDESC_EN != 0u)
 static const scl_arg_spec_t a_reset_n[] = { { "n", SCL_T_INT, 1u, "目标计数（默认 3）" } };
+#endif
 
 static void Cmd_demo_reset(int argc, char *argv[])
 {

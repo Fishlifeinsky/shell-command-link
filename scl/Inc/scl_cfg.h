@@ -50,7 +50,16 @@ extern "C" {
 #define SCL_CFG_MINI_EN         0u
 #endif
 
-/* 外部绑定变量条数上限（mini 程序把类型化静态变量注册成路由表的容量） */
+/* 注册表开关：1=使用 scl/cmd/scl_cmd_list.c（由 scl/tool/scl_gen_list.py 生成的
+   "命令数组 + 静态变量数组 + SCL_RegList_Init"），SCL_Init 时自动注册命令与静态变量；
+   0=关闭自动注册（需自行调用 SCL_RegisterCmd/SCL_VarBind）。
+   生成物以**弱符号** SCL_RegList_Init() 接入：未链接该文件时也不报错（静默跳过）。
+   这是本库唯一的注册方式（不再手写各模块的 Xxx_Register）。 */
+#ifndef SCL_CFG_REG_LIST_EN
+#define SCL_CFG_REG_LIST_EN     1u
+#endif
+
+/* 外部绑定变量条数上限（static 变量注册进路由表的容量） */
 #ifndef SCL_CFG_VAR_BIND_MAX
 #define SCL_CFG_VAR_BIND_MAX    8u
 #endif

@@ -22,7 +22,7 @@
 
 #include "scl.h"
 #include "scl_port.h"
-#include "demo_cmds.h"
+#include "scl_port.h"
 
 int main(int argc, char *argv[])
 {
@@ -64,9 +64,7 @@ int main(int argc, char *argv[])
     fclose(f);
 
     SCL_Init();
-#if (SCL_EX_CMDS_EN == 1u)
-    Scl_Demo_Register();
-#endif
+    /* 命令由注册表在 SCL_Init 内自动注册（scl/cmd/scl_cmd_list.c） */
 
     if (SCL_Run(buf) == 0u)
     {

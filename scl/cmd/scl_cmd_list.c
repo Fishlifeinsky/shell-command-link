@@ -2,11 +2,11 @@
  * SCL 注册表：scl_cmd_list.c（由 scl/tool/scl_gen_list.py 生成，勿手改）
  * 命令 6 条、静态变量 0 个
  *   cmd  demo_inc         <- scl/cmd/cmd_demo_inc.c:17
- *   cmd  demo_reset       <- scl/cmd/cmd_demo_reset.c:20
+ *   cmd  demo_reset       <- scl/cmd/cmd_demo_reset.c:22
  *   cmd  echo             <- scl/cmd/cmd_echo.c:20
  *   cmd  noop             <- scl/cmd/cmd_noop.c:12
- *   cmd  setret           <- scl/cmd/cmd_setret.c:15
- *   cmd  wait             <- scl/cmd/cmd_wait.c:40
+ *   cmd  setret           <- scl/cmd/cmd_setret.c:17
+ *   cmd  wait             <- scl/cmd/cmd_wait.c:42
  * =============================================================== */
 #include "scl.h"
 #if (SCL_CFG_CMDDESC_EN != 0u)
@@ -37,6 +37,17 @@ const int scl_cmd_list_n = 6;
 const scl_var_bind_t * const scl_var_list[1] = { NULL };   /* 空表 */
 const int scl_var_list_n = 0;
 
+#if (SCL_CFG_CMDDESC_EN != 0u)
+static const scl_cmd_desc_t * const scl_desc_list[] = {
+    &s_desc_demo_inc,
+    &s_desc_demo_reset,
+    &s_desc_echo,
+    &s_desc_noop,
+    &s_desc_setret,
+    &s_desc_wait,
+};
+#endif
+
 void SCL_RegList_Init(void)
 {
     int i;
@@ -45,7 +56,7 @@ void SCL_RegList_Init(void)
         scl_cmd_t *nd = scl_cmd_list[i];
         if (nd == NULL) { continue; }
 #if (SCL_CFG_CMDDESC_EN != 0u)
-        SCL_CmdRegisterDesc(nd, Scl_RegListDesc(i));
+        SCL_CmdRegisterDesc(nd, scl_desc_list[i]);
 #else
         SCL_RegisterCmd(nd);
 #endif
@@ -55,19 +66,3 @@ void SCL_RegList_Init(void)
         SCL_VarBindOne(scl_var_list[i]);
     }
 }
-
-#if (SCL_CFG_CMDDESC_EN != 0u)
-const scl_cmd_desc_t *Scl_RegListDesc(int i)
-{
-    static const scl_cmd_desc_t * const tab[] = {
-        &s_desc_demo_inc,
-        &s_desc_demo_reset,
-        &s_desc_echo,
-        &s_desc_noop,
-        &s_desc_setret,
-        &s_desc_wait,
-    };
-    int n = (int)(sizeof(tab) / sizeof(tab[0]));
-    return (i < n) ? tab[i] : NULL;
-}
-#endif

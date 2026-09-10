@@ -20,7 +20,7 @@
 
 #include "scl.h"
 #include "scl_port.h"
-#include "demo_cmds.h"
+#include "scl_port.h"
 
 /* ==================== 模拟"用户自己的存储区"（上板换成 Scl_Store_Write/Read） ==================== */
 static uint8_t s_store[512];
@@ -124,7 +124,7 @@ int main(void)
 {
     printf("=== SCL MCU main 骨架 · PC 无板自检 ===\n");
     SCL_Init();
-    Scl_Demo_Register();
+    /* 命令由注册表自动注册（SCL_Init 内部；见 scl/cmd/scl_cmd_list.c） */
 
     App_Boot_LoadEnv();          /* main: App_Scl_Init 的 env 部分 */
     App_SelfTest();              /* main: SCL_RunProg(&scl_boot_prog) 的等价验证 */
