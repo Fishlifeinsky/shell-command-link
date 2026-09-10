@@ -1,6 +1,6 @@
 # 命令与静态变量：宏声明 + Python 生成注册表（`scl/cmd/`）
 
-> 状态：**提案中**（等确认后再执行）
+> 状态：**已闭环**（2026-09-10，`b834fd9`；架构结论见 `doc/arc/scl-cmd-registry.md`）
 > 场景分类：运行时/解释器 ＋ 变量与绑定 ＋ 构建工具
 > 提出者 / 日期：agent 提案 / 2026-09-10（机制由用户拍板：**不用链接器段**）
 > 关联：`scl/Inc/scl.h`、`scl/Src/scl.c`（`SCL_RegisterCmd`:872、`SCL_CmdRegisterDesc`:2260、
