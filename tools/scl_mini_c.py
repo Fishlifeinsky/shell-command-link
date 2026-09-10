@@ -15,6 +15,9 @@ scl_mini_c.py —— mini-scl：把脚本/指令链编译成"类型化 C 状态�
         `<name>_mini_start()` / `_step()`（非阻塞）/ `_busy()`。
     命令注册后外部（或薄分发）可直接按名触发该 s2c 运行。
   - 通用小助手只在用到时生成极少量；需要 SCL_CFG_MINI_EN=1 编译（绑定路由在库内）。
+  - 参数发射：整串恰好是单个 ${name} 时直通（不再经 char[48] 局部缓冲 + 逐段拼接）。
+    因此绑定 getter（SCL_VarBind 注册）**必须每变量独立存储**，不得多变量共用同一
+    缓冲：同一调用点可能同时持有多个 getter 指针（如 drv("${a}", "${b}")）。
 
 用法：
   python tools/scl_mini_c.py boot.s2c -o boot_mini.c [--name boot] [--cmd boot]
@@ -388,6 +391,12 @@ def _build_arg_text(tok, sym):
                                   "flag": "SCL_T_FLAG"}[ty])
     if "${" not in tok:
         return ([], _cstr(tok), "SCL_T_STR")
+    # 快路径：整串恰好是单个 ${name}（无字面量拼接）→ 直接给表达式，
+    # 免去 char bx[48] 局部缓冲 + Mini_AppendS 逐段拼接（纯浪费，且占栈）。
+    if (nm is not None) and (tok.count("${") == 1):
+        if sym.get(nm) is not None:
+            return ([], _var_getter(nm) + "()", "SCL_T_STR")
+        return ([], "Mini_ExtS(%s)" % _cstr(nm), "SCL_T_STR")
     # 含 ${...}：编译期拆片；脚本变量用其 getter，否则外部 Mini_ExtS
     pre = []
     b = _build_arg_exp(tok, sym, pre)
@@ -462,6 +471,7 @@ def emit_mini_c(name, chain, source_note, cmd_name=None):
     L.append(" * 用法：SCL_Init(); <注册所需命令>; %s_mini_register();" % name)
     L.append(" *       %s_mini_start(); 然后周期调 %s_mini_step()（每次一动作，非阻塞）。" % (name, name))
     L.append(" * 变量=类型化 static；SCL_VarBind 绑定 → 外部 SCL_VarGet/Set 路由到 static。")
+    L.append(" * 绑定 getter 必须每变量独立存储（同一调用点可能同时持有多个 getter 指针）。")
     L.append(" * 需 SCL_CFG_MINI_EN=1 编译（绑定路由在库内）。")
     L.append(" * ===============================================================")
     L.append(" */")
@@ -806,11 +816,10 @@ def _call(idx, it, sym):
         exprs.append(tx)
         types.append(ty)
     if narg > 0:
-        L.append("const char *av[%d];" % narg)
+        # 直接填 scl_invoke_arg_t[]，不再经 const char *av[] 中转（少一层数组与赋值）
         L.append("scl_invoke_arg_t ia[%d];" % narg)
         for i in range(narg):
-            L.append("av[%d] = %s;" % (i, exprs[i]))
-            L.append("ia[%d].text = av[%d];" % (i, i))
+            L.append("ia[%d].text = %s;" % (i, exprs[i]))
             L.append("ia[%d].type = %s;" % (i, types[i]))
         L.append("{ uint8_t r = SCL_CmdInvoke(%s, %d, ia);" % (_cstr(it["name"]), narg))
     else:
