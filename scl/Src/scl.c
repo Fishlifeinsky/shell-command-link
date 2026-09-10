@@ -1086,17 +1086,8 @@ static uint8_t Scl_Compile(const char *script)
 
 /* ========================== 内置命令：help / var / free ========================== */
 
-/* 类型名 ↔ type */
-static const char *Scl_TypeName(uint8_t t)
-{
-    switch (t)
-    {
-    case SCL_T_BOOL: return "bool";
-    case SCL_T_INT:  return "int";
-    case SCL_T_FLAG: return "flag";
-    default:         return "string";
-    }
-}
+/* Scl_TypeName（类型名）实现见 scl_desc.c；本文件的变量命令、help 与
+   scl_desc.c 的 usage/校验提示都调用它。 */
 
 /* 按名字取类型（bool/int/flag/string），不是返回 0 */
 static uint8_t Scl_TypeOfName(const char *s, uint16_t n)
@@ -1108,9 +1099,7 @@ static uint8_t Scl_TypeOfName(const char *s, uint16_t n)
     return 0u;
 }
 
-#if (SCL_CFG_CMDDESC_EN != 0u)
-static void Scl_DescPrintUsage(const scl_cmd_t *nd);     /* 前向：供 help 输出模板概要 */
-#endif
+/* Scl_DescPrintUsage 定义在 scl_desc.c（help 输出模板概要用） */
 #if ((SCL_CFG_CMDDESC_EN != 0u) && (SCL_CFG_MSG_EN == 1u))
 static void Scl_DescPrintDetail(const scl_cmd_t *nd);    /* 前向：help <cmd> 命令明细（消息输出用） */
 #endif
@@ -1306,28 +1295,9 @@ int32_t SCL_ParseInt(const char *s, int32_t def)
 }
 
 #if (SCL_CFG_CMDDESC_EN != 0u)
-/* ========================== 命令描述注册辅助（argtable3 风格） ========================== */
-
-/* 打印 usage 行（<必选:类型> [可选:类型] ...） */
-static void Scl_DescPrintUsage(const scl_cmd_t *nd)
-{
-    const scl_cmd_desc_t *d = nd->desc;
-    int i;
-    Scl_Msg("usage: %s", nd->name);
-    if ((d != NULL) && (d->args != NULL))
-    {
-        for (i = 0; i < d->arg_cnt; i++)
-        {
-            const scl_arg_spec_t *a = &d->args[i];
-            if (a->opt != 0u) { Scl_Msg(" ["); }
-            else              { Scl_Msg(" <"); }
-            Scl_Msg("%s:%s", a->name, Scl_TypeName(a->type));
-            if (a->opt != 0u) { Scl_Msg("]"); }
-            else              { Scl_Msg(">"); }
-        }
-    }
-    Scl_Msg("\r\n");
-}
+/* ========================== 命令描述：实现见 scl_desc.c ==========================
+   Scl_DescPrintUsage / Scl_DescArgOk / Scl_DescCheck / SCL_CmdRegisterDesc 已移过去；
+   下面只留 help 专用的明细打印（只被 scl.c 的 help 用，留在本地可随 help 一起消除）。 */
 
 #if (SCL_CFG_MSG_EN == 1u)
 /* 打印单命令完整明细（help <cmd>；esp_console 风格：help+usage+逐参数说明+多行 doc） */
@@ -1361,80 +1331,6 @@ static void Scl_DescPrintDetail(const scl_cmd_t *nd)
 }
 #endif /* SCL_CFG_MSG_EN：DescPrintDetail 仅供 help 输出 */
 
-/* 单参数与模板匹配：0=通过。string 模板接受任意；int 模板接受 int 或可解析的文本；
-   bool/flag 模板要求类型一致 */
-static int Scl_DescArgOk(const scl_arg_spec_t *a, uint8_t have, const char *text)
-{
-    if (a->type == SCL_T_STR) { return 0; }
-    if (a->type == SCL_T_INT)
-    {
-        int32_t v;
-        if (have == SCL_T_INT) { return 0; }
-        if ((have == SCL_T_STR) &&
-            (Scl_ParseI32Len(text, Scl_StrLen(text), &v) == 0))
-        {
-            return 0;
-        }
-        return 1;
-    }
-    return (have == a->type) ? 0 : 1;
-}
-
-/* 按模板校验命令参数（s_argt/s_argv 为当前已还原参数）。0=通过；负=拒绝（已打印） */
-/* 参数模板校验（SCL_CmdInvoke 与解释器共用；声明见 scl_priv.h） */
-int Scl_DescCheck(const scl_cmd_t *nd, int argc)
-{
-    const scl_cmd_desc_t *d = nd->desc;
-    int minreq = 0;
-    int i;
-
-    if ((d == NULL) || (d->args == NULL))
-    {
-        return 0;   /* 无模板：不限制 */
-    }
-    for (i = 0; i < d->arg_cnt; i++)
-    {
-        if (d->args[i].opt == 0u) { minreq++; }
-    }
-    if (argc < minreq)
-    {
-        Scl_MsgErr("命令 '%s': 缺少参数（至少 %d 个）", nd->name, minreq);
-        Scl_DescPrintUsage(nd);
-        return -1;
-    }
-    if (argc > d->arg_cnt)
-    {
-        Scl_MsgErr("命令 '%s': 参数过多（最多 %d 个）", nd->name, d->arg_cnt);
-        Scl_DescPrintUsage(nd);
-        return -2;
-    }
-    for (i = 0; i < argc; i++)
-    {
-        if (Scl_DescArgOk(&d->args[i], s_argt[i], s_argv[i]) != 0)
-        {
-            Scl_MsgErr("命令 '%s': 参数 %d '%s' 期望 %s",
-                       nd->name, i + 1, s_argv[i],
-                       Scl_TypeName(d->args[i].type));
-            Scl_DescPrintUsage(nd);
-            return -3;
-        }
-    }
-    return 0;
-}
-
-/* 按描述注册命令（填节点 name/fn/sync/desc 后挂链） */
-void SCL_CmdRegisterDesc(scl_cmd_t *node, const scl_cmd_desc_t *desc)
-{
-    if ((node == NULL) || (desc == NULL))
-    {
-        return;
-    }
-    node->name = desc->name;
-    node->fn   = desc->fn;
-    node->sync = desc->sync;
-    node->desc = desc;
-    SCL_RegisterCmd(node);
-}
 #endif /* SCL_CFG_CMDDESC_EN */
 
 /* 变量列表 */

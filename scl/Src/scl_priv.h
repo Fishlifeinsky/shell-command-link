@@ -112,8 +112,15 @@ static inline void Scl_MsgErr(const char *fmt, ...) { (void)fmt; }
 
 scl_cmd_t *Scl_CmdFindName(const char *name, uint16_t len);
 
+/* ========================== 命令描述层（scl_desc.c 提供） ========================== */
+
+/* 类型名（bool/int/flag/string）：scl.c 的变量命令与 help 也用 */
+const char *Scl_TypeName(uint8_t t);
+
 #if (SCL_CFG_CMDDESC_EN != 0u)
-/* 命令参数模板校验：返回 0=通过；非 0=拒绝（已打印提示） */
+/* usage 行（help 在 scl.c、校验失败提示在 scl_desc.c，两处都用） */
+void       Scl_DescPrintUsage(const scl_cmd_t *nd);
+/* 参数模板校验：返回 0=通过；非 0=拒绝（已打印提示） */
 int        Scl_DescCheck(const scl_cmd_t *nd, int argc);
 #endif
 
