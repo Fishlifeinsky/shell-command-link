@@ -3,10 +3,13 @@
   * @file    scl_priv.h
   * @brief   SCL 内部共享头（多模块拆分用；库用户勿依赖）
   *
-  *          v0.3 源码按主题拆分为三个编译单元（全部必须一起编译链接）：
+  *          v0.3 源码按主题拆分为多个编译单元（全部必须一起编译链接）：
   *            scl/Src/scl.c      —— 核心：编译/执行/命令注册/异步/内置命令/文本工具
+  *            scl/Src/scl_mem.c  —— 动态内存分配器与用量统计（SCL_CFG_DYNAMIC_MEM_EN）
   *            scl/Src/scl_var.c  —— 会话变量表与管理（SCL_CFG_VAR_*）
   *            scl/Src/scl_env.c  —— 环境变量缓冲（SCL_CFG_ENV_EN）
+  *
+  *          拆分进度与验收（行为零变化）见 doc/idea/scl-module-split.md。
   *
   *          本头声明跨文件共享的类型/状态/内部函数；其余内部符号仍为 static。
   *          公共 API 见 scl.h（scl.c 拆分的对外行为不变）。
@@ -87,6 +90,7 @@ uint8_t Scl_EnvInit(void);
 void    Scl_EnvShutdown(void);
 #endif
 
+void     Scl_MemSetAllocator(const scl_allocator_t *a);
 void    *Scl_MemAlloc(size_t size);
 void    *Scl_MemRealloc(void *ptr, size_t size);
 void     Scl_MemFree(void *ptr);

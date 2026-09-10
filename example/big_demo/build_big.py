@@ -42,9 +42,8 @@ def gen_scripts():
 
 def build(debug=False):
     srcs = [
-        str(ROOT / "scl" / "Src" / "scl.c"),
-        str(ROOT / "scl" / "Src" / "scl_var.c"),
-        str(ROOT / "scl" / "Src" / "scl_env.c"),
+        # 库源：Src/ 下全部 .c（模块拆分后自动纳入）
+        *[str(p) for p in sorted((ROOT / "scl" / "Src").glob("*.c"))],
         str(ROOT / "example" / "scl_port.c"),
         str(BD / "b_sim.c"),
         str(BD / "b_cmds1.c"),

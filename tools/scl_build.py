@@ -37,10 +37,9 @@ EXE = ".exe" if os.name == "nt" else ""
 INC = ["-I", str(ROOT / "scl" / "Inc"),
        "-I", str(ROOT / "scl" / "Src"),
        "-I", str(ROOT / "example")]
-CORE_SRC = [str(ROOT / "scl" / "Src" / "scl.c"),
-            str(ROOT / "scl" / "Src" / "scl_var.c"),
-            str(ROOT / "scl" / "Src" / "scl_env.c"),
-            # 库内命令目录（一命令一文件）+ 生成的注册表（命令/静态变量数组）
+# 库源文件：Src/ 下全部 .c（模块拆分后自动纳入，新增模块不需改本脚本）
+#         + cmd/ 下命令文件与生成的注册表（一命令一文件）
+CORE_SRC = [*[str(p) for p in sorted((ROOT / "scl" / "Src").glob("*.c"))],
             *[str(p) for p in sorted((ROOT / "scl" / "cmd").glob("*.c"))]]
 
 # 使用注册表自动注册（唯一注册方式，见 scl/Inc/scl_cfg.h）
@@ -195,15 +194,14 @@ def compile_arm_objs(tag, extra=(), opt="-O2"):
         return None
     od = BUILD / "mcu32" / tag
     od.mkdir(parents=True, exist_ok=True)
-    for f in ("scl.c", "scl_var.c", "scl_env.c"):
-        src = ROOT / "scl" / "Src" / f
-        out = od / (f.replace(".c", ".o"))
+    for src in sorted((ROOT / "scl" / "Src").glob("*.c")):
+        out = od / (src.stem + ".o")
         cmd = [arm, *ARM_MCU, opt, "-Wall", "-Wextra",
                "-I", str(ROOT / "scl" / "Inc"), "-I", str(ROOT / "scl" / "Src"),
                *extra, "-c", str(src), "-o", str(out)]
         r = sh(cmd)
         if r.returncode != 0:
-            print("[ARM 编译失败] %s %s" % (tag, f))
+            print("[ARM 编译失败] %s %s" % (tag, src.name))
             print(dec(r.stderr))
             return None
     return od
@@ -262,9 +260,7 @@ def cmd_check(_a):
         return 0
     print("\n== ARM 裁剪开关零警告矩阵（-fsyntax-only） ==")
     bad = 0
-    srcs = [str(ROOT / "scl" / "Src" / "scl.c"),
-            str(ROOT / "scl" / "Src" / "scl_var.c"),
-            str(ROOT / "scl" / "Src" / "scl_env.c")]
+    srcs = [str(p) for p in sorted((ROOT / "scl" / "Src").glob("*.c"))]
     for name, cfg in CHECKS:
         cmd = [ARM, *ARM_MCU, "-O2", "-Wall", "-Wextra", "-fsyntax-only",
                "-I", str(ROOT / "scl" / "Inc"), "-I", str(ROOT / "scl" / "Src"),

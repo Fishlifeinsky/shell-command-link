@@ -196,161 +196,9 @@ static uint8_t  s_busy = 0u;
 static volatile uint8_t s_abort = 0u;
 static scl_cmd_t *s_wait_cmd = NULL;         /* 正在异步等待的命令 */
 
-/* ---- 可选动态内存统计 ---- */
-#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
-typedef struct
-{
-    size_t size;
-} scl_mem_hdr_t;
-static scl_allocator_t s_allocator;
-static size_t s_mem_current = 0u;
-static size_t s_mem_peak = 0u;
-static uint32_t s_mem_alloc_count = 0u;
-static uint32_t s_mem_free_count = 0u;
-static uint32_t s_mem_gc_count = 0u;
-#endif
-
-static uint8_t Scl_MemReady(void)
-{
-#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
-    return (s_allocator.alloc != NULL) && (s_allocator.free != NULL) ? 1u : 0u;
-#else
-    return 1u;
-#endif
-}
-
-void *Scl_MemAlloc(size_t size)
-{
-#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
-    scl_mem_hdr_t *h;
-    if (!Scl_MemReady() || size == 0u) { return NULL; }
-    h = (scl_mem_hdr_t *)s_allocator.alloc(s_allocator.ctx, sizeof(*h) + size);
-    if (h == NULL) { return NULL; }
-    h->size = size;
-    s_mem_current += size;
-    if (s_mem_current > s_mem_peak) { s_mem_peak = s_mem_current; }
-    s_mem_alloc_count++;
-    return (void *)(h + 1);
-#else
-    (void)size;
-    return NULL;
-#endif
-}
-
-void *Scl_MemRealloc(void *ptr, size_t size)
-{
-#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
-    scl_mem_hdr_t *h;
-    size_t old;
-    if (ptr == NULL) { return Scl_MemAlloc(size); }
-    if (size == 0u) { Scl_MemFree(ptr); return NULL; }
-    if (s_allocator.realloc == NULL) { return NULL; }
-    h = ((scl_mem_hdr_t *)ptr) - 1;
-    old = h->size;
-    h = (scl_mem_hdr_t *)s_allocator.realloc(s_allocator.ctx, h, sizeof(*h) + size);
-    if (h == NULL) { return NULL; }
-    h->size = size;
-    s_mem_current = s_mem_current - old + size;
-    if (s_mem_current > s_mem_peak) { s_mem_peak = s_mem_current; }
-    return (void *)(h + 1);
-#else
-    (void)ptr; (void)size;
-    return NULL;
-#endif
-}
-
-void Scl_MemFree(void *ptr)
-{
-#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
-    scl_mem_hdr_t *h;
-    if (ptr == NULL || !Scl_MemReady()) { return; }
-    h = ((scl_mem_hdr_t *)ptr) - 1;
-    if (s_mem_current >= h->size) { s_mem_current -= h->size; }
-    s_mem_free_count++;
-    s_allocator.free(s_allocator.ctx, h);
-#else
-    (void)ptr;
-#endif
-}
-
-void Scl_MemGcCount(void)
-{
-#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
-    s_mem_gc_count++;
-#endif
-}
-
-size_t Scl_MemCurrent(void) { return
-#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
-    s_mem_current
-#else
-    0u
-#endif
-; }
-size_t Scl_MemPeak(void) { return
-#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
-    s_mem_peak
-#else
-    0u
-#endif
-; }
-size_t Scl_MemCapacity(void) { return
-#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
-    0u
-#else
-    (size_t)SCL_CFG_BC_MAX + SCL_CFG_ARG_CACHE_MAX +
-    (size_t)SCL_CFG_VAR_MAX * (SCL_CFG_VAR_NAME_MAX + 1u + SCL_CFG_VAR_VALUE_MAX) +
-    64u + SCL_CFG_ARG_BUF_BYTES
-#endif
-; }
-uint32_t Scl_MemAllocCount(void) { return
-#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
-    s_mem_alloc_count
-#else
-    0u
-#endif
-; }
-uint32_t Scl_MemFreeCount(void) { return
-#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
-    s_mem_free_count
-#else
-    0u
-#endif
-; }
-uint32_t Scl_MemGcTotal(void) { return
-#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
-    s_mem_gc_count
-#else
-    0u
-#endif
-; }
-
-uint8_t SCL_CacheInfo(scl_cache_info_t *info)
-{
-    if (info == NULL) { return 0u; }
-    info->current = Scl_MemCurrent();
-    info->peak = Scl_MemPeak();
-    info->capacity = Scl_MemCapacity();
-    info->alloc_count = Scl_MemAllocCount();
-    info->free_count = Scl_MemFreeCount();
-    info->gc_count = Scl_MemGcTotal();
-    info->zombie_count = 0u;
-    return 1u;
-}
-
-uint8_t SCL_CacheGc(void)
-{
-    uint8_t r = Scl_VarGc();
-    if (r != 0u) { Scl_MemGcCount(); }
-    return r;
-}
-
-uint8_t SCL_CacheGcZombie(void)
-{
-    uint8_t r = Scl_VarGcZombie();
-    if (r != 0u) { Scl_MemGcCount(); }
-    return r;
-}
+/* ---- 动态内存分配与统计 ----
+   实现已移至 scl/Src/scl_mem.c；本文件只保留调用点。
+   SCL_InitEx 通过 Scl_MemSetAllocator() 注入分配器并清零统计。 */
 
 /* ---- 参数工作缓冲 ---- */
 #define SCL_RAW_MAX 64u                      /* 元指令参数原文上限（含 '\0'；var 整段 <40B、help/free 更短） */
@@ -2920,12 +2768,8 @@ uint8_t SCL_InitEx(const scl_allocator_t *allocator)
         return 0u;
     }
     if (s_inited != 0u) { Scl_DynamicRelease(); }
-    s_allocator = *allocator;
-    s_mem_current = 0u;
-    s_mem_peak = 0u;
-    s_mem_alloc_count = 0u;
-    s_mem_free_count = 0u;
-    s_mem_gc_count = 0u;
+    /* 注入分配器并清零统计（实现见 scl_mem.c） */
+    Scl_MemSetAllocator(allocator);
 #if (SCL_CFG_RUN_TEXT_EN != 0u)
     s_bc = (uint8_t *)Scl_MemAlloc(SCL_CFG_BC_MAX);
     s_argc = (uint8_t *)Scl_MemAlloc(SCL_CFG_ARG_CACHE_MAX);
