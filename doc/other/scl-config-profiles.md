@@ -7,6 +7,23 @@ SCL 所有占用/能力宏集中在 `scl_cfg.h`（均 `#ifndef` 保护），
 
 ## 1. 参数速查
 
+### 1.1 主开关与能力开关（决定"有哪些功能"）
+
+| 宏 | 默认 | 含义 / 关掉的后果 |
+| --- | --- | --- |
+| `SCL_CFG_MINI_EN` | 0 | **两态主开关**。1=mini 态，自动派生 `RUN_TEXT=0`/`RUN_PROG=0`/`ENV=0`/`SCMD=0`，只留最简 argc/argv 入口（ARM -O2 约 Flash 4.7 KB / RAM 0.45 KB），代价是动态脚本、const 预编译程序、env、脚本命令全不可用 |
+| `SCL_CFG_RUN_TEXT_EN` | 1 | 动态文本编译（`SCL_Run`）。置 0 省掉编译器与 RAM 大缓存，但只能跑 const 程序 |
+| `SCL_CFG_RUN_PROG_EN` | 1 | 预编译只读程序（`SCL_RunProg`，数据放 Flash）。置 0 时 const 程序不可用 |
+| `SCL_CFG_SCMD_EN` | 1 | 脚本命令 `SCL_Scmd_*`（s2c 产物注册成命令，依赖 `RUN_PROG_EN`） |
+| `SCL_CFG_ENV_EN` | 1 | 环境变量缓冲（持久配置）。置 0：`Scl_Env_*` 不可用，持久配置需宿主自行维护 |
+| `SCL_CFG_CMDDESC_EN` | 1 | 命令描述与参数模板。置 0：无模板校验、help 只列命令名 |
+| `SCL_CFG_REG_LIST_EN` | 1 | 生成的注册表自动注册（本库唯一注册方式）。置 0：需宿主逐个手工登记 |
+| `SCL_CFG_VAR_BIND_EN` | 1 | 静态变量绑定表。置 0：RAM −128 B / Flash −216 B，代价是 static 变量不可用（mini 态必须 1） |
+| `SCL_CFG_DYNAMIC_MEM_EN` | 0 | 动态内存（宿主注入 allocator）。置 0 全部走静态缓冲、无宿主依赖 |
+| `SCL_CFG_MSG_EN` | 1 | 消息输出。置 0：库内所有提示（含错误）整段裁掉，消息调用点零开销 |
+
+### 1.2 容量参数（决定"缓冲开多大"）
+
 | 宏 | 默认 | 含义 |
 | --- | --- | --- |
 | `SCL_CFG_VAR_MAX` | 4 | 变量槽数 |
@@ -18,11 +35,16 @@ SCL 所有占用/能力宏集中在 `scl_cfg.h`（均 `#ifndef` 保护），
 | `SCL_CFG_LABEL_MAX` | 16 | label 表 |
 | `SCL_CFG_LABEL_NAME_MAX` | 16 | label 名长 |
 | `SCL_CFG_STEP_LIMIT` | 100000 | 步数保护(0=关) |
+| `SCL_CFG_ENV_MAX` | 8 | env 槽数(≤255) |
 | `SCL_CFG_ARG_MAX` | 8 | 单命令参数个数 |
 | `SCL_CFG_ARG_LEN_MAX` | 32 | 单参数展开后长度 |
-| `SCL_CFG_MSG_EN` | 1 | 消息输出(0=裁全部输出) |
-| `SCL_CFG_RUN_TEXT_EN` | 1 | 动态文本编译(SCL_Run) |
-| `SCL_CFG_RUN_PROG_EN` | 1 | 预编译只读程序(SCL_RunProg) |
+| `SCL_CFG_MSG_LVL` | 0xFF(普通)/1(mini) | 运行级阈值（编译不裁剪，仅运行期门控） |
+| `SCL_CFG_OP_CMD_BASE` | 0x0100 | 注册表命令 opcode 起点 |
+| `SCL_CFG_CMD_RESERVE` | 64 | 注册表占用的 opcode 区间长度（超限构建期 `#error`） |
+
+> 两个**推导项，不可单独配**：
+> `SCL_CFG_VAR_BIND_MAX`（由 `SCL_CFG_VAR_BIND_EN` 推导：普通态 8、关闭 0）、
+> `SCL_CFG_ARG_BUF_BYTES`（= `SCL_CFG_ARG_MAX × SCL_CFG_ARG_LEN_MAX`）。
 
 ## 2. 三档模板
 

@@ -108,6 +108,10 @@ SCL_InitEx()
 
 `SCL_VarBindOne()` 把 `s_bind_*` 收进库内定长表 `s_binds[SCL_CFG_VAR_BIND_MAX]`：
 
+- 容量**不可单独配置**：由 `SCL_CFG_VAR_BIND_EN` 推导（普通态 8 项；开关置 0 时
+  整表不生成、登记与查找退化为空操作，实现侧不会出现零长数组）；
+- 超出容量时后续登记被截断（`SCL_VarBindOne` 返回 0），需在集成阶段发现。
+
 - 查找优先级：**static（绑定表）> var（会话表）> env**；
 - 关掉 `SCL_CFG_VAR_BIND_EN`（默认 1）→ 绑定表整体编译掉，
   实测 **RAM −128 B / Flash −216 B**；此时 static 变量不可用；

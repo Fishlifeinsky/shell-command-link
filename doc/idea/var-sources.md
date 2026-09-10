@@ -90,7 +90,7 @@ mini 态把 `var` 裁掉后，外部值只能靠宿主手写 `SCL_VarBind` 绑�
 | 静态 RAM（normal） | 不变：新增 `staticvar` 只是不占会话槽；会话槽表大小不变 |
 | Flash | 每 static 变量：`getter/setter` + 绑定项（与现状宿主手写等价） |
 | 公共 API | 无破坏性变化；新增 `SCL_VarBindOne()`（注册表用） |
-| 配置开关 | 复用 `SCL_CFG_VAR_BIND_MAX`（static 变量计入该上限，需按脚本调大） |
+| 配置开关 | `SCL_CFG_VAR_BIND_EN`（开关）；容量 `SCL_CFG_VAR_BIND_MAX` 由该开关推导、固定 8，**不可单独配** |
 | 普通态 / mini 态 | 两态语义差异集中在 §3.2/§3.3，需在 `doc/spec/` 写明 |
 | 生成物与工具链 | s2c 前端 + mini 生成器 + const prog 生成器三处都要支持 `static` |
 | 向后兼容性 | 现有 `var`/`const` 脚本不受影响；**mini 下原本用 `var` 的脚本会变成编译错误**（属于有意的行为收紧） |
@@ -131,7 +131,7 @@ python tools/scl_mini_c.py bad_init.s2c  -o out.c   # 期望: 报错 "static 不
 |---|---|---|
 | 现有 mini 脚本被拒 | 原先用 `var` 的脚本升级后编译失败 | 迁到 `static`；或给生成器加 `--allow-var` 兼容开关（短期过渡） |
 | static 未绑定 | normal 下脚本引用未绑定的 static | 运行期明确报错（而非静默空值）；错误信息带上变量名 |
-| 绑定表容量 | static 变量计入 `SCL_CFG_VAR_BIND_MAX`（默认 8）易满 | 文档提示按脚本调大；生成器在变量数超限时**构建期报警** |
+| 绑定表容量 | 固定 8 项（由 `SCL_CFG_VAR_BIND_EN` 推导，不可单独配），static 变量多时易满 | 超限的登记被截断（返回 0）；生成器在变量数超限时**构建期报警** |
 | 语义分裂 | 同一脚本两态行为不同，易误用 | `doc/spec/` 用一张表讲清；生成器在各态给出对应报错 |
 
 ## 9. 待确认
