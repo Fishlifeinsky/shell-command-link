@@ -8,7 +8,7 @@ description: "适用于 Shell-Command-Link 嵌入式脚本库的开发：修改�
 ## 改动提案规约（强制，先读这条）
 
 **任何 agent 想对本库提出更改，必须先在 `doc/idea/` 建立一份"执行 + 闭环"文档**，
-然后才能动代码。目录与规范见 [`doc/idea/README.md`](../../../doc/idea/README.md)。
+然后才能动代码。目录与规范见本仓库 `doc/idea/README.md`（模板 `doc/idea/_TEMPLATE.md`）。
 
 流程四步（缺一不可）：
 
