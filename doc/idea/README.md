@@ -60,6 +60,7 @@
 
 | 文档 | 场景分类 | 状态 | 一句话 |
 |---|---|---|---|
+| [cmd-modular-registration.md](cmd-modular-registration.md) | 运行时/解释器 + 变量与绑定 | **提案中** | 命令与静态变量改"一命令一文件 + 段自注册"（Linux 驱动风格），放 `scl/cmd/` |
 | [mini-direct-call.md](mini-direct-call.md) | 生成器 | 搁置 | 生成代码直接调 handler 而非 `SCL_CmdInvoke` 按名查找 |
 | [trim-desc-and-argbuf.md](trim-desc-and-argbuf.md) | 配置裁剪 | 提案中 | 关 `CMDDESC` / 收紧 `ARG_MAX`、`ARG_LEN_MAX` 进一步压体积 |
 
