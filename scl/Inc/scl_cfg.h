@@ -59,6 +59,25 @@ extern "C" {
 #define SCL_CFG_REG_LIST_EN     1u
 #endif
 
+/* 静态变量绑定表开关：1=保留"名字→getter/setter"路由表（static 型变量可用）；
+   0=编译期关掉该表，省下 SCL_CFG_VAR_BIND_MAX 项静态 RAM（默认 8×16B ≈ 128B），
+     代价是 static 型变量不可用（SCL_VarBind/One 变空操作，查找恒不命中）。
+   普通态默认 1；**不用 static 变量的工程可置 0 换 RAM**。
+   mini 态必须为 1（mini 的变量全部走该表）。 */
+#ifndef SCL_CFG_VAR_BIND_EN
+#define SCL_CFG_VAR_BIND_EN     1u
+#endif
+
+#if (SCL_CFG_MINI_EN != 0u) && (SCL_CFG_VAR_BIND_EN == 0u)
+#error "mini 态必须保留绑定表（SCL_CFG_VAR_BIND_EN=1）"
+#endif
+
+/* 关掉绑定表时把容量归零：数组零长度、登记循环立即因 k>=0 退出（不占 RAM） */
+#if (SCL_CFG_VAR_BIND_EN == 0u)
+#undef  SCL_CFG_VAR_BIND_MAX
+#define SCL_CFG_VAR_BIND_MAX    0u
+#endif
+
 /* 外部绑定变量条数上限（static 变量注册进路由表的容量） */
 #ifndef SCL_CFG_VAR_BIND_MAX
 #define SCL_CFG_VAR_BIND_MAX    8u

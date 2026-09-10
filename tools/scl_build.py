@@ -210,6 +210,7 @@ def compile_arm_objs(tag, extra=(), opt="-O2"):
 # 各档宏集合（对应 doc/other/scl-config-profiles.md）
 PROFILES = [
     ("def_O2",   "默认全功能(O2)", (), "-O2"),
+    ("def_nb_O2", "默认-关绑定表(O2)", ("-DSCL_CFG_VAR_BIND_EN=0",), "-O2"),
     ("def_Os",   "默认(-Os)", (), "-Os"),
     ("A_O2",     "档A 最小RAM(O2)", ("-DSCL_CFG_RUN_TEXT_EN=0", "-DSCL_CFG_VAR_MAX=2",
                                      "-DSCL_CFG_ARG_MAX=4", "-DSCL_CFG_ARG_LEN_MAX=24"), "-O2"),
