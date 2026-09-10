@@ -45,7 +45,10 @@ extern "C" {
    0=普通态：文本指令链 SCL_Run + 预编译 SCL_RunProg + env + 描述 + 全消息；
    1=mini 态：解释器收敛为最简 argc/argv 解析（SCL_RunLine/SCL_CmdInvoke），
      自动派生：RUN_TEXT=0、RUN_PROG=0、ENV=0、SCMD=0、消息默认级=ERR；
-     描述(CMDDESC)仍保留。各宏仍可用 -D...=x 单独覆盖。 */
+     描述(CMDDESC)仍保留。各宏仍可用 -D...=x 单独覆盖。
+   【后果】置 1 换体积：库不再含文本编译/解释器与预编译程序支持
+     （ARM -O2 实测 mini 档 Flash 约 4.7 KB / RAM 约 0.45 KB），
+     但动态文本脚本、const 预编译程序、env 与脚本命令均不可用。 */
 #ifndef SCL_CFG_MINI_EN
 #define SCL_CFG_MINI_EN         0u
 #endif
@@ -54,31 +57,36 @@ extern "C" {
    "命令数组 + 静态变量数组 + SCL_RegList_Init"），SCL_Init 时自动注册命令与静态变量；
    0=关闭自动注册（需自行调用 SCL_RegisterCmd/SCL_VarBind）。
    生成物以**弱符号** SCL_RegList_Init() 接入：未链接该文件时也不报错（静默跳过）。
-   这是本库唯一的注册方式（不再手写各模块的 Xxx_Register）。 */
+   这是本库唯一的注册方式（不再手写各模块的 Xxx_Register）。
+   【后果】置 0：不再自动注册，命令与静态变量必须由宿主逐个 SCL_RegisterCmd/
+     SCL_VarBindOne 手工登记（命令仍可用，但漏登记不会被任何机制提醒）。 */
 #ifndef SCL_CFG_REG_LIST_EN
 #define SCL_CFG_REG_LIST_EN     1u
 #endif
 
 /* 业务命令 opcode 起点：注册表命令按 `BASE + 表内下标` 分配；
    手工 SCL_RegisterCmd 从 `BASE + SCL_CFG_CMD_RESERVE` 起继续。
-   （生成物 scl_cmd_list.c 也用它，故必须放在公共配置头） */
+   （生成物 scl_cmd_list.c 也用它，故必须放在公共配置头）
+   【后果】改大/改小只影响 opcode 编号，不影响已烧录的 const 预编译程序
+     （它们按命令名调用，不落 opcode）；但与宿主侧硬编码的编号会不一致。 */
 #ifndef SCL_CFG_OP_CMD_BASE
 #define SCL_CFG_OP_CMD_BASE     0x0100u
 #endif
 
 /* 注册表（scl/cmd/scl_cmd_list.c）命令占用的 opcode 区间长度。
-   opcode = SCL_OP_CMD_BASE + 表内下标，故必须给注册表留出足够区间；
+   注册表命令 opcode = SCL_CFG_OP_CMD_BASE + 表内下标，故必须给注册表留出足够区间；
    手工 SCL_RegisterCmd 的命令从 BASE + 本值 起继续分配，两者不冲突。
-   生成器会在命令数超过本值时构建期报错（提示调大）。 */
+   【后果】设小了：生成器会在构建期 #error 提示调大（不会运行期越界）；
+     设大了：只浪费 opcode 编号空间，不占 Flash/RAM。 */
 #ifndef SCL_CFG_CMD_RESERVE
 #define SCL_CFG_CMD_RESERVE     64u
 #endif
 
 /* 静态变量绑定表开关：1=保留"名字→getter/setter"路由表（static 型变量可用）；
-   0=编译期关掉该表，省下 SCL_CFG_VAR_BIND_MAX 项静态 RAM（默认 8×16B ≈ 128B），
-     代价是 static 型变量不可用（SCL_VarBind/One 变空操作，查找恒不命中）。
-   普通态默认 1；**不用 static 变量的工程可置 0 换 RAM**。
-   mini 态必须为 1（mini 的变量全部走该表）。 */
+   0=编译期关掉该表（数组与登记循环整段不生成）。
+   【后果】置 0：普通态实测 RAM −128 B / Flash −216 B；
+     代价是 static 型变量不可用（SCL_VarBind / SCL_VarBindOne 变空操作、查表恒不命中）。
+   普通态默认 1（不用 static 变量的工程可置 0 换 RAM）；mini 态必须 1。 */
 #ifndef SCL_CFG_VAR_BIND_EN
 #define SCL_CFG_VAR_BIND_EN     1u
 #endif
@@ -87,15 +95,13 @@ extern "C" {
 #error "mini 态必须保留绑定表（SCL_CFG_VAR_BIND_EN=1）"
 #endif
 
-/* 关掉绑定表时把容量归零：数组零长度、登记循环立即因 k>=0 退出（不占 RAM） */
-#if (SCL_CFG_VAR_BIND_EN == 0u)
-#undef  SCL_CFG_VAR_BIND_MAX
-#define SCL_CFG_VAR_BIND_MAX    0u
-#endif
-
-/* 外部绑定变量条数上限（static 变量注册进路由表的容量） */
-#ifndef SCL_CFG_VAR_BIND_MAX
+/* 绑定表容量（项数）：**由上面开关直接推导**，不再是独立配置项。
+   普通态固定 8；该值为 0 时实现侧用零长数组（不占 RAM，登记与查找恒不命中）。
+   static 变量条数超过容量时登记被截断（SCL_VarBindOne 返回 0），需在集成阶段发现。 */
+#if (SCL_CFG_VAR_BIND_EN != 0u)
 #define SCL_CFG_VAR_BIND_MAX    8u
+#else
+#define SCL_CFG_VAR_BIND_MAX    0u
 #endif
 
 /* 消息运行级默认值：运行时把 SCL_MsgLvl 设为 SCL_CFG_MSG_LVL（枚举见 scl.h）。
@@ -109,15 +115,13 @@ extern "C" {
 #endif
 #endif
 
-/* 动态内存模式：1=由 SCL_InitEx 提供的 allocator 管理运行缓冲；0=静态数组。
-   动态模式下变量名/值按需分配，解释器工作区在初始化时分配。 */
+/* 动态内存模式：1=由 SCL_InitEx 注入的 allocator 管理运行缓冲；0=静态数组（默认）。
+   【后果】开 1：变量名/值与解释器工作区改由 allocator 按需分配，宿主必须
+     提供 alloc/realloc/free（无 malloc 的系统需自行适配）；
+     关 0：全部走编译期静态缓冲，RAM 占用固定、无碎片、无宿主依赖。
+   它只改变"内存来源"，不改变任何对外语义。 */
 #ifndef SCL_CFG_DYNAMIC_MEM_EN
 #define SCL_CFG_DYNAMIC_MEM_EN   0u
-#endif
-
-/* 动态模式下保留的最小变量槽数量；变量名/值仍按首次使用懒分配。 */
-#ifndef SCL_CFG_DYNAMIC_VAR_MAX
-#define SCL_CFG_DYNAMIC_VAR_MAX  SCL_CFG_VAR_MAX
 #endif
 
 /* ============================ 文本 / 字节码 / 参数缓存 ============================ */
@@ -194,7 +198,9 @@ extern "C" {
 
 /* 环境变量缓冲总开关：1=支持（默认配置表装载/用户存储装载、序列化固化导出）。
    环境变量在脚本读路径（${}、VarGet、运算/真值操作数）可见（会话变量优先）；
-   0=裁掉该表；SCL_CFG_MINI_EN 最简档默认裁掉（可用 -D 覆盖为 1） */
+   0=裁掉该表；SCL_CFG_MINI_EN 最简档默认裁掉（可用 -D 覆盖为 1）。
+   【后果】置 0：Scl_Env_* 全部不可用，持久配置需宿主自行维护；
+     写路径不受影响（脚本只能写会话变量）。 */
 #ifndef SCL_CFG_ENV_EN
 #if (SCL_CFG_MINI_EN != 0u)
 #define SCL_CFG_ENV_EN        0u
@@ -215,7 +221,9 @@ extern "C" {
 /* ============================ 命令描述注册辅助（argtable3 风格） ============================ */
 
 /* 命令描述总开关：1=命令可带描述（help + 参数模板），注册后自动校验参数、
-   错误输出 usage、help 汇总带说明；0=裁掉（scl_cmd_t 无 desc 字段） */
+   错误输出 usage、help 汇总带说明；0=裁掉（scl_cmd_t 无 desc 字段）。
+   【后果】置 0：省下描述结构与帮助文本，但没有参数模板校验、
+     help 只能列出命令名（参数个数/类型不再提示）。 */
 #ifndef SCL_CFG_CMDDESC_EN
 #define SCL_CFG_CMDDESC_EN     1u
 #endif
@@ -237,7 +245,10 @@ extern "C" {
 
 /* ============================ 输出 ============================ */
 
-/* 消息输出开关：0=关闭（库内所有提示整段裁掉，可不实现 SCL_Port_PutChar） */
+/* 消息输出开关：0=关闭（库内所有提示整段裁掉，可不实现 SCL_Port_PutChar）
+   【后果】置 0：不再有任何库内文字输出（含错误提示），
+     消息相关函数退化为头内联空实现（调用点零开销）；
+     出错只能靠返回值/状态区分，是嵌入式量产档常用的省体积手段。 */
 #ifndef SCL_CFG_MSG_EN
 #define SCL_CFG_MSG_EN           1u
 #endif

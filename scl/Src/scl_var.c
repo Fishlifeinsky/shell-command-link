@@ -19,7 +19,7 @@ typedef struct
     scl_var_set_t  set;
 } scl_bind_t;
 
-static scl_bind_t s_binds[SCL_CFG_VAR_BIND_MAX];
+static scl_bind_t s_binds[SCL_CFG_VAR_BIND_MAX];   /* 关闭开关时容量为 0（零长数组，GCC/IAR/Keil 均支持） */
 static int s_bind_cnt = 0;
 
 void SCL_VarBindClear(void)
