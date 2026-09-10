@@ -6,6 +6,7 @@
   *          v0.3 源码按主题拆分为多个编译单元（全部必须一起编译链接）：
   *            scl/Src/scl.c      —— 核心：编译/执行/内置命令/初始化编排
   *            scl/Src/scl_cmd.c  —— 命令注册表、按名查找、编程式调用与异步、一行解析
+  *            scl/Src/scl_exec.c —— 编译链与字节码执行核（含 help 与内置命令实现）
   *            scl/Src/scl_core.c —— 文本/数值小工具 + 消息输出（无 libc）
   *            scl/Src/scl_mem.c  —— 动态内存分配器与用量统计（SCL_CFG_DYNAMIC_MEM_EN）
   *            scl/Src/scl_var.c  —— 会话变量表与管理（SCL_CFG_VAR_*）
@@ -57,8 +58,18 @@ extern scl_cmd_t *s_cmd_head;                          /* 命令链表头 */
 extern uint16_t   s_next_opc;                          /* 手工注册的 opcode 递增游标 */
 extern scl_cmd_t *s_wait_cmd;                          /* 正在异步等待的命令 */
 
-/* 参数工作缓冲（scl_cmd.c 的命令直调路径与 scl.c 的编译链共用）。
-   s_raw / s_cmdname 只在 scl.c 内使用，故留在那里保持 static（未用档位可自动消除）。 */
+/* 解释器运行状态（scl_exec.c 读写，scl.c 的初始化与循环也要看） */
+extern uint8_t          s_inited;                      /* 首次初始化标记（Run/RunProg 自举用） */
+extern uint8_t          s_busy;                        /* 有程序正在执行 */
+extern volatile uint8_t s_abort;                       /* 宿主请求中断 */
+extern uint8_t          s_ret;                         /* G_RETURN 条件标志 */
+
+#if ((SCL_CFG_SCMD_EN != 0u) && (SCL_CFG_RUN_PROG_EN != 0u))
+extern scl_scmd_t *s_scmd_head;                        /* 脚本命令链表（scl_exec.c 定义） */
+#endif
+
+/* 参数工作缓冲（命令直调与编译/执行两条路径共用）。
+   注：s_raw / s_cmdname 已随执行核搬入 scl_exec.c 并保持 static。 */
 #define SCL_RAW_MAX      64u     /* 元指令参数原文上限（含 '\0'） */
 #define SCL_CMDNAME_MAX  32u     /* CALLN 命令名缓冲长度（含 '\0'） */
 #if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
@@ -114,15 +125,26 @@ scl_cmd_t *Scl_CmdFindName(const char *name, uint16_t len);
 
 /* ========================== 命令描述层（scl_desc.c 提供） ========================== */
 
-/* 类型名（bool/int/flag/string）：scl.c 的变量命令与 help 也用 */
+/* 类型名（bool/int/flag/string）：scl_exec.c 的变量命令与 help 也用 */
 const char *Scl_TypeName(uint8_t t);
 
 #if (SCL_CFG_CMDDESC_EN != 0u)
-/* usage 行（help 在 scl.c、校验失败提示在 scl_desc.c，两处都用） */
+/* usage 行（help 在 scl_exec.c、校验失败提示在 scl_desc.c，两处都用） */
 void       Scl_DescPrintUsage(const scl_cmd_t *nd);
 /* 参数模板校验：返回 0=通过；非 0=拒绝（已打印提示） */
 int        Scl_DescCheck(const scl_cmd_t *nd, int argc);
 #endif
+
+/* ========================== 执行核（scl_exec.c 提供） ========================== */
+
+/* 推进一条指令（scl.c 的 SCL_Loop 调用；mini 态无解释器故不声明） */
+#if ((SCL_CFG_RUN_TEXT_EN) != 0u) || ((SCL_CFG_RUN_PROG_EN) != 0u)
+void    Scl_StepOnce(void);
+#endif
+/* 执行态缓冲的分配/释放/复位（由 SCL_InitEx 驱动；mini 态为空实现） */
+uint8_t Scl_ExecInit(void);
+void    Scl_ExecRelease(void);
+void    Scl_ExecReset(void);
 
 /* ========================== 会话变量内部（scl_var.c 提供） ========================== */
 
