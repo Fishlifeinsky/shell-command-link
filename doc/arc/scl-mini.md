@@ -90,3 +90,62 @@ scl_bind_t { name, type(SCL_T_*), get(), set() }  ->  s_binds[SCL_CFG_VAR_BIND_M
 - `scl/Src/scl_var.c`：mini 绑定路由模块（顶部）+ 普通态会话表（`#else`）
 - `tools/scl_mini_c.py` / `tools/scl_emit_c.py --mini`：mini 状态机生成器
 - `example/mini/boot_mini.c` / `boot_mini_sim.c`：生成样例与自检 driver（10/10 PASS）
+
+---
+
+## 8. 生成器体积优化（v2.1）
+
+生成物大小不只取决于库，**生成器的发射策略**同样是关键项。已落地的两项：
+
+### 8.1 单引用参数直通（主要收益）
+
+旧行为：任何含 `${}` 的参数一律走"局部缓冲 + 逐段拼接"，即使整串就是单个 `${name}`：
+
+```c
+char bx4[48]; unsigned zx4 = 0u;                            /* 48B 栈 */
+Mini_AppendS(bx4, &zx4, sizeof(bx4), Mini_ExtS("dist"));    /* 纯搬运 */
+bx4[zx4 < sizeof(bx4) ? zx4 : sizeof(bx4) - 1u] = '\0';
+av[1] = bx4;
+```
+
+新行为：整串恰好是单个 `${name}`（无字面量）时直接给表达式，免缓冲、免拼接：
+
+```c
+ia[1].text = Mini_ExtS("dist");
+```
+
+### 8.2 去掉 `const char *av[]` 中转
+
+`ia[i].text` 直接赋值，不再经一层指针数组（少 N 个指针的栈与赋值）。
+
+### 8.3 实测（`measure_flow.s2c`：22 状态、8 外部注入变量）
+
+同参数对照编译（`arm-none-eabi-size`）：
+
+| 优化级别 | `.text`（生成物） | `step()` | 生成 C 源码 |
+|---|---|---|---|
+| `-O2` 优化前 | 4147 | 3588 | 17338 B |
+| `-O2` 优化后 | **2755** | **2196（−39%）** | **12294 B** |
+| `-Os` 优化前 | 2890 | 2412 | 17338 B |
+| `-Os` 优化后 | **2186** | **1708（−29%）** | 12294 B |
+
+### 8.4 约束（重要）
+
+直通后，同一调用点可能**同时持有多个 getter 返回的指针**（旧实现是拿到值立刻快照到局部缓冲）。
+因此绑定 getter **必须每个变量独立存储**，不得多变量共用同一个 `static char` 缓冲，
+否则形如 `drv("${a}", "${b}")` 的调用会取到同一个（最后求值的）值。
+
+- 生成器为脚本内变量生成的 getter 天然每变量独立；
+- 宿主注入变量（`SCL_VarBind`）需遵守同一条约定（见 `example/` 与工程侧 `scl-mini-mode-migration` 文档）。
+
+### 8.5 仍然"按名调用"的理由
+
+生成代码目前仍走 `SCL_CmdInvoke("name", argc, ia)` 而非直接调 `handler`：
+
+| 方案 | 省 | 付 |
+|---|---|---|
+| 按名调用（现状） | — | `SCL_CmdInvoke` 564B + `Scl_CmdFindName` 72B + `Scl_StrEq` 42B（一次性） |
+| 直接调回调 | 上述 ≈ 0.7 KB 一次性 | 生成器需拿到命令 C 符号（名字→符号耦合）；argv 仍需**可写**缓冲（handler 会原地改）；失去 `nd->sync != NULL` 的异步判定与 desc 模板校验 |
+
+即：直接调用是**一次性 ~0.5KB 级**的收益，而 8.1 这类发射策略优化是**随脚本规模线性**的收益，
+后者才是主要矛盾。
