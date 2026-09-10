@@ -34,7 +34,7 @@ scl_cmd_t * const scl_cmd_list[] = {
 };
 const int scl_cmd_list_n = 6;
 
-const scl_var_bind_t * const scl_var_list[1] = { NULL };   /* 空表 */
+const scl_var_bind_t * const * const scl_var_list = NULL;   /* 空表：NULL 指针 */
 const int scl_var_list_n = 0;
 
 #if (SCL_CFG_CMDDESC_EN != 0u)

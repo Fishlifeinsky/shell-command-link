@@ -180,25 +180,25 @@ def emit(cmds, vars_, files, out_name):
         L.append("extern const scl_var_bind_t s_bind_%s;" % nm)
     L.append("")
 
-    # ---- 命令数组 ----
+    # ---- 命令数组（大小由生成器按实际条数决定；空表用 NULL 指针，不占空间） ----
     if cmds:
         L.append("scl_cmd_t * const scl_cmd_list[] = {")
         for nm, _f, _l in cmds:
             L.append("    &s_cmd_%s," % nm)
         L.append("};")
     else:
-        L.append("scl_cmd_t * const scl_cmd_list[1] = { NULL };   /* 空表 */")
+        L.append("scl_cmd_t * const * const scl_cmd_list = NULL;   /* 空表：NULL 指针 */")
     L.append("const int scl_cmd_list_n = %d;" % len(cmds))
     L.append("")
 
-    # ---- 变量数组 ----
+    # ---- 变量数组（同上：条数决定大小，空表 NULL） ----
     if vars_:
         L.append("const scl_var_bind_t * const scl_var_list[] = {")
         for nm, _f, _l in vars_:
             L.append("    &s_bind_%s," % nm)
         L.append("};")
     else:
-        L.append("const scl_var_bind_t * const scl_var_list[1] = { NULL };   /* 空表 */")
+        L.append("const scl_var_bind_t * const * const scl_var_list = NULL;   /* 空表：NULL 指针 */")
     L.append("const int scl_var_list_n = %d;" % len(vars_))
     L.append("")
 
