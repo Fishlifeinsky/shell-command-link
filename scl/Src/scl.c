@@ -20,7 +20,8 @@
   *                业务命令/运算指令参数按字面量类型化；无参 argOff=0（保留缓存第 0 字节）
   *                label → 登记到 label 表 (名 → 下一条指令字节偏移)
   *                jump/callf → 编译期把名解析为目标偏移写入 argOff 槽；retf 无参
-  *            - 命令在 SCL_RegisterCmd() 时自动分配 opcode（自 0x0100 起）
+  *            - 命令 opcode：注册表命令 = SCL_CFG_OP_CMD_BASE + 表内下标；
+  *              手工 SCL_RegisterCmd 自 BASE + SCL_CFG_CMD_RESERVE 起递增
   *            - 变量类型化：bool/int/flag/string，槽存 type + 规范化文本（见 scl.h）
   *            - 内置 int/bool 运算指令（保留关键字，见 scl.h 注释）
   *            - 主循环周期调 SCL_Loop() 逐条解释执行字节码；业务命令分同步/异步：
@@ -127,9 +128,10 @@ enum
 
 static uint8_t s_inited = 0u;      /* 首次自动初始化标记 */
 
-/* ---- 命令链表（注册即自动分配 opcode） ---- */
-static scl_cmd_t *s_cmd_head = NULL;
-static uint16_t  s_next_opc  = (uint16_t)SCL_OP_CMD_BASE;
+/* ---- 命令链表（注册即自动分配 opcode） ----
+   非 static：注册/查找/调用逻辑在 scl_cmd.c（声明见 scl_priv.h） ---- */
+scl_cmd_t *s_cmd_head = NULL;
+uint16_t   s_next_opc  = (uint16_t)SCL_OP_CMD_BASE;
 
 #if ((SCL_CFG_SCMD_EN != 0u) && (SCL_CFG_RUN_PROG_EN != 0u))
 /* ---- 脚本命令链表（s2c 编译产物注册成命令，SCL_Scmd_*） ---- */
@@ -190,30 +192,31 @@ uint8_t s_keep_vars = 0u;
 /* ---- 执行状态 ---- */
 static uint8_t  s_busy = 0u;
 static volatile uint8_t s_abort = 0u;
-static scl_cmd_t *s_wait_cmd = NULL;         /* 正在异步等待的命令 */
+scl_cmd_t *s_wait_cmd = NULL;                /* 正在异步等待的命令（scl_cmd.c 读写） */
 
 /* ---- 动态内存分配与统计 ----
    实现已移至 scl/Src/scl_mem.c；本文件只保留调用点。
    SCL_InitEx 通过 Scl_MemSetAllocator() 注入分配器并清零统计。 */
 
-/* ---- 参数工作缓冲 ---- */
-#define SCL_RAW_MAX 64u                      /* 元指令参数原文上限（含 '\0'；var 整段 <40B、help/free 更短） */
+/* ---- 参数工作缓冲 ----
+   s_argb/s_argv/s_argt 由 scl_cmd.c 的命令直调路径共用 → 外部链接（声明见 scl_priv.h）；
+   s_raw/s_cmdname 只在本文件用 → 保持 static，未被引用的档位会被编译器自动
+   消除（全局符号做不到这一点，mini 会白付几十字节）。容量宏见 scl_priv.h。 */
 #if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
 static char *s_raw = NULL;
-static char (*s_argb)[SCL_CFG_ARG_LEN_MAX] = NULL;
-static char **s_argv = NULL;
-static uint8_t *s_argt = NULL;
+char (*s_argb)[SCL_CFG_ARG_LEN_MAX] = NULL;
+char **s_argv = NULL;
+uint8_t *s_argt = NULL;
 #else
-static char s_raw[SCL_RAW_MAX];             /* 从缓存取出的参数原文 */
-static char s_argb[SCL_CFG_ARG_MAX][SCL_CFG_ARG_LEN_MAX];
-static char *s_argv[SCL_CFG_ARG_MAX];
-static uint8_t s_argt[SCL_CFG_ARG_MAX];       /* 当前命令各参数 type（SCL_ArgType 用） */
+static char s_raw[SCL_RAW_MAX];
+char s_argb[SCL_CFG_ARG_MAX][SCL_CFG_ARG_LEN_MAX];
+char *s_argv[SCL_CFG_ARG_MAX];
+uint8_t s_argt[SCL_CFG_ARG_MAX];       /* 当前命令各参数 type（SCL_ArgType 用） */
 #endif
-#define SCL_CMDNAME_MAX 32u                   /* CALLN 命令名缓冲长度（含 '\0'） */
 #if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
-static char *s_cmdname = NULL;                /* CALLN：动态工作区 */
+static char *s_cmdname = NULL;         /* CALLN：动态工作区 */
 #else
-static char s_cmdname[SCL_CMDNAME_MAX];       /* CALLN：当前按名调用命令名（运行工作区） */
+static char s_cmdname[SCL_CMDNAME_MAX]; /* CALLN：当前按名调用命令名（运行工作区） */
 #endif
 
 /* 文本/数值小工具实现见 scl/Src/scl_core.c（原型在 scl_priv.h） */
@@ -280,269 +283,13 @@ static int Scl_RetTake(void)
     return r;
 }
 
-/* ========================== 命令注册 ==========================
-   opcode 由**注册表（list 下标）**决定：scl/cmd/scl_cmd_list.c 在注册前按顺序
-   写 `nd->opc = SCL_OP_CMD_BASE + i`；本函数**不覆盖已分配的 opcode**。
-   手工注册（opc==0）时才从"保留区之后"继续分配，避免与注册表区间冲突。 */
+/* 命令注册表、按名/按 opcode 查找、编程式调用（含异步）、
+   一行解析 SCL_RunLine 与 ${} 展开 Scl_ExpandCopy 均已移至 scl/Src/scl_cmd.c
+   （原型见 scl_priv.h）。 */
 
-void SCL_RegisterCmd(scl_cmd_t *cmd)
-{
-    scl_cmd_t **pp;
-
-    if (cmd == NULL)
-    {
-        return;
-    }
-    if (cmd->opc == 0u)                  /* 0=未分配（手工注册路径） */
-    {
-        cmd->opc  = s_next_opc;
-        s_next_opc = (uint16_t)(s_next_opc + 1u);
-    }
-    cmd->next = NULL;
-    pp = &s_cmd_head;
-    while (*pp != NULL)
-    {
-        pp = &((*pp)->next);
-    }
-    *pp = cmd;
-}
-
-/* 只读：返回命令链表头（供遍历/补全/调试） */
-const scl_cmd_t *SCL_CmdHead(void)
-{
-    return s_cmd_head;
-}
-
-int SCL_ArgType(int idx)
-{
-    if ((idx < 0) || (idx >= (int)SCL_CFG_ARG_MAX))
-    {
-        return 0;
-    }
-    return (int)s_argt[idx];
-}
-
-/* ============================ 命令编程式调用（mini / 宿主直调） ============================ */
-
-static scl_cmd_t *Scl_CmdFindName(const char *name, uint16_t len);   /* 定义见下 */
-#if (SCL_CFG_CMDDESC_EN != 0u)
-static int Scl_DescCheck(const scl_cmd_t *nd, int argc);             /* 定义见后 */
-#endif
-
-uint8_t SCL_CmdInvoke(const char *name, int argc, const scl_invoke_arg_t *argv)
-{
-    scl_cmd_t *nd;
-    uint16_t nl;
-    int ai;
-
-    if (name == NULL)
-    {
-        return 0u;
-    }
-    nl = Scl_StrLen(name);
-    if (nl == 0u)
-    {
-        return 0u;
-    }
-    if (argc < 0)
-    {
-        return 0u;
-    }
-    if (argc > (int)SCL_CFG_ARG_MAX)
-    {
-        Scl_MsgErr("命令 '%s': 参数过多(>%d)", name, (int)SCL_CFG_ARG_MAX);
-        return 0u;
-    }
-    if ((argc > 0) && (argv == NULL))
-    {
-        return 0u;
-    }
-
-    nd = Scl_CmdFindName(name, nl);
-    if (nd == NULL)
-    {
-        Scl_MsgErr("未知命令 '%s'", name);
-        return 0u;
-    }
-
-    /* 拷入工作缓冲并记录各参数类型（同解释器 Scl_ArgRestore 后的状态） */
-    for (ai = 0; ai < argc; ai++)
-    {
-        const char *tx = argv[ai].text;
-        uint16_t len;
-        uint16_t k;
-        if (tx == NULL) { tx = ""; }
-        len = Scl_StrLen(tx);
-        if (len >= SCL_CFG_ARG_LEN_MAX)
-        {
-            len = (uint16_t)(SCL_CFG_ARG_LEN_MAX - 1u);
-        }
-        for (k = 0u; k < len; k++) { s_argb[ai][k] = tx[k]; }
-        s_argb[ai][len] = '\0';
-        s_argt[ai] = (uint8_t)((argv[ai].type == 0u) ? SCL_T_STR : argv[ai].type);
-        s_argv[ai] = s_argb[ai];
-    }
-
-#if (SCL_CFG_CMDDESC_EN != 0u)
-    if (Scl_DescCheck(nd, argc) != 0)
-    {
-        return 0u;   /* 模板校验拒绝（已打印 usage/错误） */
-    }
-#endif
-    if (nd->sync != NULL)
-    {
-        s_wait_cmd = nd;   /* 异步：登记等待再发起（同解释器） */
-    }
-    nd->fn(argc, s_argv);
-    return (nd->sync != NULL) ? 2u : 1u;
-}
-
-uint8_t SCL_AsyncBusy(void)
-{
-    return (s_wait_cmd != NULL) ? 1u : 0u;
-}
-
-int SCL_AsyncPoll(void)
-{
-    if (s_wait_cmd == NULL)
-    {
-        return -1;
-    }
-    if (s_wait_cmd->sync != NULL)
-    {
-        if (s_wait_cmd->sync(false))
-        {
-            s_wait_cmd->sync(true);
-            s_wait_cmd = NULL;
-            return 1;
-        }
-        return 0;
-    }
-    s_wait_cmd = NULL;
-    return 1;
-}
-
-/* ============ 最简"解释器"：一行 → 命令名 + argc/argv → 按名执行 ============ */
-
-uint8_t SCL_RunLine(const char *line)
-{
-    char tb[SCL_CFG_ARG_BUF_BYTES];   /* token 文本区（仅调用时占栈，避免常驻 RAM） */
-    char nm[SCL_CMDNAME_MAX];
-    scl_invoke_arg_t ia[SCL_CFG_ARG_MAX];
-    int32_t iv;
-    uint16_t nml;
-    uint16_t tbi = 0u;
-    int argc = 0;
-    const char *p;
-
-    if (line == NULL)
-    {
-        return 0u;
-    }
-    if (SCL_AsyncBusy() != 0u)
-    {
-        Scl_MsgErr("busy: 上一条异步命令未完成");
-        return 0u;
-    }
-    p = line;
-    while (Scl_IsSp(*p)) { p++; }
-    if (*p == '\0') { return 0u; }
-
-    /* 命令名（首个空白前；不支持引号命令名） */
-    nml = 0u;
-    while ((p[nml] != '\0') && !Scl_IsSp(p[nml]) && (nml + 1u < (uint16_t)sizeof(nm)))
-    {
-        nml++;
-    }
-    if (nml == 0u)
-    {
-        return 0u;
-    }
-    if ((p[nml] != '\0') && !Scl_IsSp(p[nml]))
-    {
-        Scl_MsgErr("命令名过长");
-        return 0u;
-    }
-    {
-        uint16_t k;
-        for (k = 0u; k < nml; k++) { nm[k] = p[k]; }
-        nm[nml] = '\0';
-    }
-    if (Scl_CmdFindName(nm, nml) == NULL)
-    {
-        Scl_MsgErr("未知命令 '%s'", nm);
-        return 0u;
-    }
-    p += nml;
-
-    /* 参数：空白分隔；引号内可有空白（整段 STR，类型不识别） */
-    for (;;)
-    {
-        char q = 0;
-        uint16_t start;
-        uint16_t len;
-        uint8_t ty;
-        while (*p != '\0' && Scl_IsSp(*p)) { p++; }
-        if (*p == '\0') { break; }
-        if (argc >= (int)SCL_CFG_ARG_MAX)
-        {
-            Scl_MsgErr("参数过多(>%d)", (int)SCL_CFG_ARG_MAX);
-            return 0u;
-        }
-        start = tbi;
-        if ((*p == '"') || (*p == '\''))
-        {
-            q = *p;
-            p++;
-        }
-        while (*p != '\0')
-        {
-            if (q != 0)
-            {
-                if (*p == q) { p++; break; }
-            }
-            else if (Scl_IsSp(*p))
-            {
-                break;
-            }
-            if (tbi + 1u < (uint16_t)sizeof(tb)) { tb[tbi++] = *p; }
-            p++;
-        }
-        tb[tbi] = '\0';
-        len = (uint16_t)(tbi - start);
-        tbi++;   /* 越过 NUL，为下个 token 让位 */
-        ty = SCL_T_STR;
-        if ((q == 0) && (len == 4u) && Scl_EqIN(&tb[start], "true", 4u)) { ty = SCL_T_BOOL; }
-        else if ((q == 0) && (len == 5u) && Scl_EqIN(&tb[start], "false", 5u)) { ty = SCL_T_BOOL; }
-        else if ((q == 0) && (len == 2u) && (tb[start] == '-') && Scl_IsAl(tb[start + 1u]))
-        {
-            ty = SCL_T_FLAG;
-        }
-        else if ((q == 0) && (len > 0u) && (Scl_ParseI32Len(&tb[start], len, &iv) == 0))
-        {
-            ty = SCL_T_INT;
-        }
-        ia[argc].text = &tb[start];
-        ia[argc].type = ty;
-        argc++;
-    }
-
-    return SCL_CmdInvoke(nm, argc, (argc > 0) ? ia : NULL);
-}
-
-static scl_cmd_t *Scl_CmdFindName(const char *name, uint16_t len)
-{
-    scl_cmd_t *node;
-    for (node = s_cmd_head; node != NULL; node = node->next)
-    {
-        uint16_t nl = Scl_StrLen(node->name);
-        if ((nl == len) && Scl_EqN(node->name, name, len))
-        {
-            return node;
-        }
-    }
-    return NULL;
-}
+/* SCL_RunLine / Scl_CmdFindName / SCL_CmdInvoke / SCL_Async* 的实现见 scl_cmd.c。
+   下面两个只被本文件的编译链与执行路径使用，保持 static：未被引用的档位
+   （如 mini）会被编译器整段消除，不占体积。 */
 
 static scl_cmd_t *Scl_CmdFindOp(uint16_t opc)
 {
@@ -557,8 +304,7 @@ static scl_cmd_t *Scl_CmdFindOp(uint16_t opc)
     return NULL;
 }
 
-/* ========================== ${} 展开拷贝 ========================== */
-
+/* ${} 展开拷贝：成功 0；-1 变量名过长；-2 目标缓冲不足（已尽量写入） */
 static int Scl_ExpandCopy(const char *src, const char *end,
                           char *dst, uint16_t cap)
 {
@@ -1635,7 +1381,8 @@ static int Scl_DescArgOk(const scl_arg_spec_t *a, uint8_t have, const char *text
 }
 
 /* 按模板校验命令参数（s_argt/s_argv 为当前已还原参数）。0=通过；负=拒绝（已打印） */
-static int Scl_DescCheck(const scl_cmd_t *nd, int argc)
+/* 参数模板校验（SCL_CmdInvoke 与解释器共用；声明见 scl_priv.h） */
+int Scl_DescCheck(const scl_cmd_t *nd, int argc)
 {
     const scl_cmd_desc_t *d = nd->desc;
     int minreq = 0;

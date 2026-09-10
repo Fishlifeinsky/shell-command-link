@@ -4,7 +4,8 @@
   * @brief   SCL 内部共享头（多模块拆分用；库用户勿依赖）
   *
   *          v0.3 源码按主题拆分为多个编译单元（全部必须一起编译链接）：
-  *            scl/Src/scl.c      —— 核心：编译/执行/命令注册/异步/内置命令
+  *            scl/Src/scl.c      —— 核心：编译/执行/内置命令/初始化编排
+  *            scl/Src/scl_cmd.c  —— 命令注册表、按名查找、编程式调用与异步、一行解析
   *            scl/Src/scl_core.c —— 文本/数值小工具 + 消息输出（无 libc）
   *            scl/Src/scl_mem.c  —— 动态内存分配器与用量统计（SCL_CFG_DYNAMIC_MEM_EN）
   *            scl/Src/scl_var.c  —— 会话变量表与管理（SCL_CFG_VAR_*）
@@ -51,6 +52,25 @@ extern scl_var_t s_vars[SCL_CFG_VAR_MAX];              /* scl_var.c 定义 */
 
 extern uint8_t s_keep_vars;                            /* scl.c 定义；scl_var.c 写 */
 
+/* 命令链表与异步等待（逻辑在 scl_cmd.c，定义仍在 scl.c 以保证 InitEx 重置简单） */
+extern scl_cmd_t *s_cmd_head;                          /* 命令链表头 */
+extern uint16_t   s_next_opc;                          /* 手工注册的 opcode 递增游标 */
+extern scl_cmd_t *s_wait_cmd;                          /* 正在异步等待的命令 */
+
+/* 参数工作缓冲（scl_cmd.c 的命令直调路径与 scl.c 的编译链共用）。
+   s_raw / s_cmdname 只在 scl.c 内使用，故留在那里保持 static（未用档位可自动消除）。 */
+#define SCL_RAW_MAX      64u     /* 元指令参数原文上限（含 '\0'） */
+#define SCL_CMDNAME_MAX  32u     /* CALLN 命令名缓冲长度（含 '\0'） */
+#if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
+extern char   (*s_argb)[SCL_CFG_ARG_LEN_MAX];
+extern char   **s_argv;
+extern uint8_t *s_argt;
+#else
+extern char     s_argb[SCL_CFG_ARG_MAX][SCL_CFG_ARG_LEN_MAX];
+extern char    *s_argv[SCL_CFG_ARG_MAX];
+extern uint8_t  s_argt[SCL_CFG_ARG_MAX];
+#endif
+
 #if (SCL_CFG_ENV_EN != 0u)
 #if (SCL_CFG_DYNAMIC_MEM_EN != 0u)
 extern scl_var_t *s_env;                               /* scl_env.c 定义 */
@@ -86,6 +106,15 @@ void     Scl_MsgErr(const char *fmt, ...);
 #else
 static inline void Scl_Msg(const char *fmt, ...)    { (void)fmt; }
 static inline void Scl_MsgErr(const char *fmt, ...) { (void)fmt; }
+#endif
+
+/* ========================== 命令注册与调用（scl_cmd.c 提供） ========================== */
+
+scl_cmd_t *Scl_CmdFindName(const char *name, uint16_t len);
+
+#if (SCL_CFG_CMDDESC_EN != 0u)
+/* 命令参数模板校验：返回 0=通过；非 0=拒绝（已打印提示） */
+int        Scl_DescCheck(const scl_cmd_t *nd, int argc);
 #endif
 
 /* ========================== 会话变量内部（scl_var.c 提供） ========================== */
